@@ -411,6 +411,15 @@ read a file in ways no matcher enumerates — `python -c`, a heredoc, a base64
 round trip, a build script that loads dotenv. Warden is not a boundary and the
 hook does not make it one.
 
+### The Claude Code mod
+
+`integrations/claude-code/` is a Claude Code mod that does the hook's job from
+inside the session, plus what a settings hook cannot: it removes credentials
+from tool output before the model sees them, shows `warden doctor`'s findings
+above the prompt, and adds an `/env` pane of key names and states with a button
+that opens warden's own dialog. It asks this binary for every decision. See its
+README for loading and options.
+
 ### The vault
 
 `.env` and `~/.secrets` hold credentials that already exist somewhere. The vault

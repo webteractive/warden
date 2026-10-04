@@ -1,0 +1,37 @@
+{
+  "name": "warden",
+  "version": "0.1.2",
+  "description": "Guards .env and ~/.secrets reads with warden, redacts credentials from tool output, and shows env health and an /env pane — never a value.",
+  "author": {
+    "name": "webteractive"
+  },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "redact": {
+      "type": "string",
+      "title": "Redact credentials",
+      "description": "Remove credential-shaped values from tool output before the model sees them: live (high-confidence live credentials), all, or off (note only).",
+      "default": "live",
+      "options": ["live", "all", "off"]
+    },
+    "band": {
+      "type": "boolean",
+      "title": "Env health band",
+      "description": "Show warden doctor's problems above the prompt.",
+      "default": true
+    },
+    "bandLevel": {
+      "type": "string",
+      "title": "Band severity",
+      "description": "The lowest severity the band shows.",
+      "default": "warn",
+      "options": ["warn", "error"]
+    },
+    "wardenPath": {
+      "type": "string",
+      "title": "warden binary",
+      "description": "An explicit path to warden. Empty: PATH, then ~/.local/bin/warden.",
+      "default": ""
+    }
+  }
+}
