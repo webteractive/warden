@@ -23,6 +23,9 @@ var (
 	ErrNotSet = errors.New("key is not set")
 	// ErrGlobalUnsupported means the operation has no meaning for ~/.secrets.
 	ErrGlobalUnsupported = errors.New("not supported in global scope")
+	// ErrNoFile means there is no env file to open. It is the store's error,
+	// re-exported so callers that may not import store can recognise it.
+	ErrNoFile = store.ErrNoFile
 )
 
 // Scope selects which store to open.

@@ -278,6 +278,11 @@ Problems carry a stable `code` (`perms`, `empty`, `drift`, `no-example`,
 `undeclared`, `unreferenced`) and a severity, so `--json` consumers key on those
 rather than on the wording.
 
+Errors follow suit. Under `--json` a failure is written to stderr as
+`{"error":{"code":"…","message":"…"}}` with the usual exit code, so a program
+can tell `no-env-file` (this project has none) from `error` (warden failed)
+without matching text. The other codes are `refused`, `not-set` and `usage`.
+
 `refs` compares the source tree against the file, and needs no `.env.example` to
 be right. It also says when it could not read a file, since a key referenced only
 in a skipped file would look unused:

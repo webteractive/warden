@@ -6,6 +6,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +24,9 @@ import (
 type ExitError struct {
 	Code int
 	Msg  string
+	// Kind is the machine-readable cause a --json caller keys on. Empty means
+	// the default for Code (see kindOf).
+	Kind string
 }
 
 func (e *ExitError) Error() string { return e.Msg }
@@ -63,10 +67,62 @@ func Run(args []string, out, errw io.Writer) error {
 	err := root.Execute()
 	if err != nil {
 		if msg := err.Error(); msg != "" {
-			fmt.Fprintln(errw, msg)
+			if jsonRequested(root, args) {
+				writeJSONError(errw, err)
+			} else {
+				fmt.Fprintln(errw, msg)
+			}
 		}
 	}
 	return err
+}
+
+// jsonRequested reports whether the caller asked for --json. The parsed flag is
+// the answer once cobra got that far; a usage error can stop it earlier, and
+// the raw arguments still say what was asked for.
+func jsonRequested(root *cobra.Command, args []string) bool {
+	if v, err := root.PersistentFlags().GetBool("json"); err == nil && v {
+		return true
+	}
+	for _, a := range args {
+		if a == "--json" || a == "--json=true" {
+			return true
+		}
+	}
+	return false
+}
+
+// writeJSONError writes an error as {"error":{"code","message"}} so a program
+// can branch on the cause. The message is the same text a person would see,
+// which carries no value for the same reasons the plain form does.
+func writeJSONError(errw io.Writer, err error) {
+	type body struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}
+	_ = json.NewEncoder(errw).Encode(map[string]body{
+		"error": {Code: kindOf(err), Message: err.Error()},
+	})
+}
+
+// kindOf names an error's cause: its own Kind, else the meaning of its exit
+// code. An error that is not an ExitError came from argument parsing.
+func kindOf(err error) string {
+	var ee *ExitError
+	if !errors.As(err, &ee) {
+		return "usage"
+	}
+	if ee.Kind != "" {
+		return ee.Kind
+	}
+	switch ee.Code {
+	case CodeNo:
+		return "not-set"
+	case CodeRefused:
+		return "refused"
+	default:
+		return "error"
+	}
 }
 
 func newRootCmd(out, errw io.Writer) *cobra.Command {
@@ -150,7 +206,11 @@ func jsonFlag(cmd *cobra.Command) bool {
 func openQuery(cmd *cobra.Command) (*query.Q, error) {
 	q, err := query.Open(scopeFrom(cmd))
 	if err != nil {
-		return nil, &ExitError{Code: CodeError, Msg: fmt.Sprintf("warden: %v", err)}
+		ee := &ExitError{Code: CodeError, Msg: fmt.Sprintf("warden: %v", err)}
+		if errors.Is(err, query.ErrNoFile) {
+			ee.Kind = "no-env-file"
+		}
+		return nil, ee
 	}
 	return q, nil
 }
