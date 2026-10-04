@@ -1,6 +1,10 @@
 package hook
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"time"
+)
 
 func TestDecideOnFileReads(t *testing.T) {
 	for _, tc := range []struct {
@@ -266,6 +270,28 @@ func TestAGrepGlobThatCanSelectADotfileCounts(t *testing.T) {
 		if got := Decide(Request{ToolName: "Grep", FilePath: "/p", Glob: glob}) != ""; got != deny {
 			t.Errorf("glob %q: deny = %v, want %v", glob, got, deny)
 		}
+	}
+}
+
+// Brace expansion multiplies: forty {a,b} groups are 2^40 words. Expanding them
+// all would hang the guard on one crafted command, so expansion stops at a cap,
+// and a word cut off there that still spells an env file is denied rather than
+// let through half-read.
+func TestBraceExpansionIsBoundedAndFailsClosed(t *testing.T) {
+	done := make(chan bool, 1)
+	go func() {
+		done <- Decide(Request{ToolName: "Bash", Command: "cat " + strings.Repeat("{a,b}", 40) + ".env"}) != ""
+	}()
+	select {
+	case denied := <-done:
+		if !denied {
+			t.Error("a capped expansion that names .env should be denied")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("brace expansion did not finish in 2s")
+	}
+	if Decide(Request{ToolName: "Bash", Command: "echo " + strings.Repeat("{a,b}", 40)}) != "" {
+		t.Error("a capped expansion that names nothing should be allowed")
 	}
 }
 

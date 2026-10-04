@@ -225,8 +225,12 @@ func globTarget(glob string) Target {
 	if !strings.Contains(glob, "env") && !strings.Contains(glob, "secrets") {
 		return globTargetOf(glob)
 	}
+	alts, cut := expandBraces(glob)
+	if cut {
+		return overflowTarget(glob)
+	}
 	var target Target
-	for _, alt := range expandBraces(glob) {
+	for _, alt := range alts {
 		base := path.Base(alt)
 		if IsProtected(base) {
 			target = stricter(target, targetOf(base))
@@ -241,22 +245,51 @@ func globTarget(glob string) Target {
 	return target
 }
 
+// maxBraceWords caps brace expansion. Each {a,b} group multiplies the words,
+// so forty of them are 2^40, and expanding all of one crafted command would
+// hang the guard.
+const maxBraceWords = 256
+
 // expandBraces expands `{a,b}` alternatives, which path.Match does not know.
-func expandBraces(glob string) []string {
-	open := strings.Index(glob, "{")
-	if open < 0 {
-		return []string{glob}
+// It reports whether it stopped at maxBraceWords; a caller treats a word cut
+// off there as naming an env file, since the part it never expanded might.
+func expandBraces(glob string) ([]string, bool) {
+	words := []string{glob}
+	for {
+		var next []string
+		grew := false
+		for _, w := range words {
+			open := strings.Index(w, "{")
+			end := -1
+			if open >= 0 {
+				end = strings.Index(w[open:], "}")
+			}
+			if end < 0 {
+				next = append(next, w)
+				continue
+			}
+			end += open
+			grew = true
+			for _, alt := range strings.Split(w[open+1:end], ",") {
+				if len(next) == maxBraceWords {
+					return next, true
+				}
+				next = append(next, w[:open]+alt+w[end+1:])
+			}
+		}
+		words = next
+		if !grew {
+			return words, false
+		}
 	}
-	end := strings.Index(glob[open:], "}")
-	if end < 0 {
-		return []string{glob}
+}
+
+// overflowTarget is the target for a word whose expansion was cut off.
+func overflowTarget(word string) Target {
+	if strings.Contains(strings.ToLower(word), "secrets") {
+		return TargetSecrets
 	}
-	end += open
-	var out []string
-	for _, alt := range strings.Split(glob[open+1:end], ",") {
-		out = append(out, expandBraces(glob[:open]+alt+glob[end+1:])...)
-	}
-	return out
+	return TargetEnv
 }
 
 // segmentRe matches the operators that join separate commands. Compiled once at

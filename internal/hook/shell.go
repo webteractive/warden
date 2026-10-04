@@ -130,8 +130,12 @@ func dequote(s string) string {
 // pattern starts where a dotfile does: a bare * leaves dotfiles out, and
 // denying it would deny every command that globs a directory.
 func globTargetOf(word string) Target {
+	alts, cut := expandBraces(strings.ToLower(word))
+	if cut {
+		return overflowTarget(word)
+	}
 	var target Target
-	for _, alt := range expandBraces(strings.ToLower(word)) {
+	for _, alt := range alts {
 		base := path.Base(alt)
 		if IsProtected(base) {
 			target = stricter(target, targetOf(base))
