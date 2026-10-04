@@ -89,9 +89,10 @@ var editTools = map[string]bool{"Edit": true, "Write": true, "NotebookEdit": tru
 // command streams it line by line, which is the same read.
 var shellTools = map[string]bool{"Bash": true, "Monitor": true}
 
-// readTools open a file by path.
+// readTools open a file by path. LSP hands the file to a language server,
+// whose hover and symbol answers quote it.
 var readTools = map[string]bool{
-	"Read": true, "Edit": true, "Write": true, "NotebookEdit": true,
+	"Read": true, "Edit": true, "Write": true, "NotebookEdit": true, "LSP": true,
 }
 
 // readableNames are the env-adjacent files that exist to be read. Blocking them
@@ -107,6 +108,14 @@ var readers = map[string]bool{
 	"strings": true, "xxd": true, "od": true, "hexdump": true, "nl": true, "cut": true,
 	"open": true, "code": true, "vim": true, "vi": true, "nano": true, "emacs": true,
 	"source": true, ".": true, "cp": true, "mv": true, "dd": true, "tee": true,
+	// Commands that print, transform, copy or send a file's contents. ln is
+	// here because a link made now is a read under another name later.
+	"ln": true, "diff": true, "cmp": true, "comm": true, "sort": true, "uniq": true,
+	"tr": true, "rev": true, "tac": true, "fold": true, "paste": true, "join": true,
+	"column": true, "fmt": true, "pr": true, "expand": true, "split": true,
+	"base64": true, "base32": true, "openssl": true, "iconv": true, "jq": true, "yq": true,
+	"gzip": true, "zcat": true, "bzip2": true, "xz": true, "tar": true, "zip": true,
+	"rsync": true, "scp": true, "install": true, "curl": true, "wget": true,
 }
 
 // envFileNames is what an env file's name looks like, defined once so the two
@@ -116,16 +125,19 @@ const envFileNames = `(\.env(\.[A-Za-z0-9_-]+)?|\.secrets)`
 // envFileRe matches a path that names an env file. The surrounding guards keep
 // envy.md and .environment out; group 2 is the name itself. A backtick counts
 // as a boundary on either side, so `cat .env` in backticks still names the
-// file; it is spelled \x60 because a raw string cannot hold one.
-var envFileRe = regexp.MustCompile(`(^|[/\s"'=(\x60])` + envFileNames + `($|[\s"'):;&|\x60])`)
+// file; it is spelled \x60 because a raw string cannot hold one. @ is a
+// boundary for curl's @file. It ignores case: macOS volumes are
+// case-insensitive by default, so .ENV opens .env.
+var envFileRe = regexp.MustCompile(`(?i)(^|[/\s"'=(@\x60])` + envFileNames + `($|[\s"'):;&|\x60])`)
 
 // redirectRe catches `... < .env`, where the redirect is the read and no reader
 // command appears anywhere in the segment.
-var redirectRe = regexp.MustCompile(`<\s*[^\s<>|&]*` + envFileNames + `\b`)
+var redirectRe = regexp.MustCompile(`(?i)<\s*[^\s<>|&]*` + envFileNames + `\b`)
 
 // IsProtected reports whether path names a file warden exists to keep closed.
+// Case is ignored, as a default macOS volume ignores it.
 func IsProtected(path string) bool {
-	name := filepath.Base(strings.TrimSpace(path))
+	name := strings.ToLower(filepath.Base(strings.TrimSpace(path)))
 	if readableNames[name] {
 		return false
 	}
@@ -154,9 +166,10 @@ func Detail(r Request) Decision {
 	case shellTools[r.ToolName]:
 		// Judge each segment on its own, so a chained read is not laundered by a
 		// harmless command sitting next to it. Every segment is judged, so a
-		// command naming both files is reported against the stricter one.
+		// command naming both files is reported against the stricter one. The
+		// command is judged as the shell will spell it, not as it was typed.
 		var target Target
-		for _, seg := range splitSegments(r.Command) {
+		for _, seg := range splitSegments(normalizeShell(r.Command)) {
 			target = stricter(target, deniedSegment(seg))
 		}
 		if target != "" {
@@ -181,7 +194,7 @@ func deny(what, tool string, target Target) Decision {
 
 // targetOf names the target for a file the guard protects.
 func targetOf(name string) Target {
-	if filepath.Base(strings.TrimSpace(name)) == ".secrets" {
+	if strings.ToLower(filepath.Base(strings.TrimSpace(name))) == ".secrets" {
 		return TargetSecrets
 	}
 	return TargetEnv
@@ -202,13 +215,15 @@ func stricter(a, b Target) Target {
 // them, or that is itself shaped like a protected name, selects a protected file.
 var globCandidates = []string{".env", ".env.local", ".env.production", ".secrets"}
 
-// globTarget reports the target a Grep glob selects, or "". A glob must name an
-// env file to select one: `*` and `*.*` match .env as surely as `.env` does, but
-// they are how every search over a tree is written, and denying them would deny
-// Grep outright. ripgrep skips hidden files under them by default anyway.
+// globTarget reports the target a Grep glob selects, or "". A glob that names
+// an env file counts wherever its wildcards are. One that does not name one
+// counts only when it starts where a dotfile does (.e*, .*, ?env): `*` and `*.*`
+// match .env as surely as `.env` does, but they are how every search over a
+// tree is written, and denying them would deny Grep outright.
 func globTarget(glob string) Target {
+	glob = strings.ToLower(glob)
 	if !strings.Contains(glob, "env") && !strings.Contains(glob, "secrets") {
-		return ""
+		return globTargetOf(glob)
 	}
 	var target Target
 	for _, alt := range expandBraces(glob) {
@@ -309,13 +324,17 @@ func commandToken(f string) string {
 }
 
 // mentionsProtected returns the strictest target among the env files the
-// segment names that are not one of the readable ones, or "" for none.
+// segment names that are not one of the readable ones, or "" for none. A word
+// whose braces or wildcards expand to one names it too.
 func mentionsProtected(seg string) Target {
 	var target Target
 	for _, m := range envFileRe.FindAllStringSubmatch(seg, -1) {
-		if !readableNames[m[2]] {
-			target = stricter(target, targetOf(m[2]))
+		if name := strings.ToLower(m[2]); !readableNames[name] {
+			target = stricter(target, targetOf(name))
 		}
+	}
+	for _, f := range strings.Fields(seg) {
+		target = stricter(target, globTargetOf(strings.Trim(f, "<>()`")))
 	}
 	return target
 }

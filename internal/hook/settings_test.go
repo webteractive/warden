@@ -142,7 +142,7 @@ func TestTheMatcherCoversEveryToolTheGuardJudges(t *testing.T) {
 	for _, name := range strings.Split(Matcher, "|") {
 		tools[name] = true
 	}
-	for _, want := range []string{"Read", "Edit", "Write", "NotebookEdit", "Bash", "Grep", "Monitor"} {
+	for _, want := range []string{"Read", "Edit", "Write", "NotebookEdit", "Bash", "Grep", "Monitor", "LSP"} {
 		if !tools[want] {
 			t.Errorf("matcher %q leaves out %s", Matcher, want)
 		}

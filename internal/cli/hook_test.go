@@ -252,3 +252,28 @@ func TestGuardJSONFailsOpenOnAnUnreadablePayload(t *testing.T) {
 		t.Errorf("code=%d answer=%+v", code, a)
 	}
 }
+
+func TestGuardReadsTheLSPPath(t *testing.T) {
+	withGuardInput(t, `{"tool_name":"LSP","tool_input":{"operation":"hover","filePath":"/p/.env","line":1,"character":1}}`)
+	if _, _, code := run(t, "hook", "--guard"); code != 2 {
+		t.Errorf("code = %d, want 2", code)
+	}
+}
+
+// ln -s .env notes.txt, then Read notes.txt: the name says nothing, where it
+// lands says everything. The settings hook has no other way to see that.
+func TestGuardJudgesASymlinkByWhereItLands(t *testing.T) {
+	dir := project(t, map[string]string{".env": "A=1\n"})
+	link := filepath.Join(dir, "notes.txt")
+	if err := os.Symlink(filepath.Join(dir, ".env"), link); err != nil {
+		t.Fatal(err)
+	}
+	withGuardInput(t, `{"tool_name":"Read","tool_input":{"file_path":"`+link+`"}}`)
+	if _, _, code := run(t, "hook", "--guard"); code != 2 {
+		t.Errorf("code = %d, want 2", code)
+	}
+	withGuardInput(t, `{"tool_name":"Read","tool_input":{"file_path":"`+filepath.Join(dir, "missing.txt")+`"}}`)
+	if _, _, code := run(t, "hook", "--guard"); code != 0 {
+		t.Errorf("a path that resolves nowhere is judged by its name; code = %d", code)
+	}
+}

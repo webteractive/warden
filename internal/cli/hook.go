@@ -26,6 +26,7 @@ type guardPayload struct {
 		Command      string `json:"command"`
 		FilePath     string `json:"file_path"`
 		NotebookPath string `json:"notebook_path"`
+		LSPPath      string `json:"filePath"`
 		Path         string `json:"path"`
 		Glob         string `json:"glob"`
 	} `json:"tool_input"`
@@ -213,18 +214,27 @@ func decideGuard() hook.Decision {
 	// Each tool names its file in a field of its own; Decide only needs to
 	// know which one this call used.
 	path := p.ToolInput.FilePath
-	if path == "" {
-		path = p.ToolInput.NotebookPath
+	for _, alt := range []string{p.ToolInput.NotebookPath, p.ToolInput.LSPPath, p.ToolInput.Path} {
+		if path == "" {
+			path = alt
+		}
 	}
-	if path == "" {
-		path = p.ToolInput.Path
-	}
-	return hook.Detail(hook.Request{
+	req := hook.Request{
 		ToolName: p.ToolName,
 		FilePath: path,
 		Command:  p.ToolInput.Command,
 		Glob:     p.ToolInput.Glob,
-	})
+	}
+	d := hook.Detail(req)
+	// ln -s .env notes.txt, then Read notes.txt: the name says nothing, where it
+	// lands says everything. A path that resolves nowhere is judged by its name.
+	if d.Reason == "" && path != "" {
+		if real, err := filepath.EvalSymlinks(path); err == nil && real != path {
+			req.FilePath = real
+			d = hook.Detail(req)
+		}
+	}
+	return d
 }
 
 func runHookCheck(out io.Writer, path string) error {
