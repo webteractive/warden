@@ -99,6 +99,19 @@ func invocations(dir string) map[string][][]string {
 			{"doctor", "--project", dir, "--strict=error"},
 			{"doctor", "--project", dir, "--strict=loud"},
 		},
+		// version opens no file and takes no key. It is in the table because the
+		// table is exhaustive by design, not because it is a plausible leak.
+		"version": {
+			{"version"},
+		},
+		// init reports a path and a mode and never opens the file, so the only
+		// way it could leak is by quoting something it had no reason to read.
+		// Both cases run against a fixture whose .env is full of canaries: the
+		// first finds the file already there, the second tightens it.
+		"init": {
+			{"init", "--project", dir},
+			{"init", "--project", dir, "--json"},
+		},
 		"set": {
 			{"set", "DB_PASSWORD", canaryPassword, "--project", dir},
 			{"set", "APP_NAME", "renamed", "--project", dir},

@@ -54,8 +54,12 @@ go install github.com/webteractive/warden/cmd/warden@latest
 ### Verifying the install
 
 ```sh
-warden --help
+warden --version      # warden 0.1.6 (ca8363f, 2026-09-05)
 ```
+
+`-v` and `warden version` print the same line. The commit and date are there
+because "which build is this?" is usually asked when a released version and a
+local build disagree, and the tag alone cannot tell those apart.
 
 If the command isn't found, `~/.local/bin` isn't on your `PATH` — the installer
 says so and prints the line to add to your shell profile.
@@ -71,6 +75,8 @@ warden classify APP_URL         # explains why a key is secret or public
 warden doctor                   # permissions, empty values, drift
 warden doctor --strict          # same, but exit 1 when there are problems
 warden refs                     # keys the code reads that .env does not set
+warden init                     # create .env readable only by you (0600)
+warden --version                # which build is this? (-v, or: warden version)
 warden set APP_NAME Warden      # public keys, written directly
 warden set --secret DB_PASSWORD # prompts you; the caller never sees the value
 warden set --secret K --from-file ./creds.txt   # warden opens the file itself
@@ -93,6 +99,68 @@ Flags: `--global` targets `~/.secrets` · `--project <dir>` names the project ·
 **Set** means present *and* non-empty. `KEY=` counts as declared-but-unset, and
 `warden has KEY` exits 1 for it.
 
+### Creating the file
+
+```sh
+warden init            # ./.env
+warden init --global   # ~/.secrets
+```
+
+Whatever makes an env file first decides who can read it, and none of the usual
+candidates think about that: an editor, `touch .env`, a shell redirect, `cp
+.env.example .env`, a framework installer. All of them apply the umask, which on
+a default macOS or Linux account leaves a file of credentials readable by every
+other account on the machine. That is the finding `warden doctor` reports most
+often — and by the time it reports it, the secrets have already been written
+into a world-readable file.
+
+`warden init` creates the file at `0600` regardless of your umask. It is safe to
+re-run, so it belongs in a setup script: an existing file keeps its contents
+untouched, loose permissions on one are tightened, and the output says which of
+those happened.
+
+```
+ok: created .env (0600)
+ok: .env already exists (0600), nothing to change
+ok: tightened .env from 0644 to 0600 — it was readable by other accounts on this
+machine, so treat anything already stored in it as exposed
+```
+
+That last line is the honest one. Narrowing the mode now does not un-read
+anything: a credential that sat in a world-readable file was readable for as
+long as it sat there, and tightening the file afterwards is a fix for the next
+secret, not the last one. Rotate what was in it.
+
+The path is used exactly as given. Run this in a subdirectory of a project that
+already has an `.env` above it and you get a second file there — unlike the
+reading commands, `init` does not walk upward and adopt the parent's.
+
+### Which command writes a key
+
+One table, because picking the wrong one is the most common way to use warden
+badly — and the wrong pick is usually `--secret` reached for reflexively when
+the value is already out:
+
+| Where the value is right now | Command |
+|---|---|
+| You don't have it; the user does | `warden set --secret KEY` |
+| In a file on disk | `warden set --secret KEY --from-file PATH` |
+| Doesn't exist yet, or needs rotating | `warden set --secret KEY --generate` |
+| **Already printed** — by a tool, pasted by the user, in scrollback | `warden set --exposed KEY VALUE` |
+| Not sensitive | `warden set KEY VALUE` |
+| Not sensitive, but warden calls it secret by default | `warden set --public KEY VALUE` |
+
+The test for the fourth row is simply *did you have this value before you ran
+the command?* If yes, a prompt protects nothing it has already lost, and
+`--exposed` is the honest move: it stores the value and records that it is
+burned. If no, `--exposed` is the wrong answer no matter how convenient — it is
+not a way around a refusal.
+
+Warden tells you this at the moment it matters, too. `warden set KEY VALUE` on a
+secret key names both commands and the test for choosing, because that refusal
+is reached precisely when a caller is holding a value and about to do something
+careless with it.
+
 ### Where a secret's value comes from
 
 `--secret` says the value must not appear on a command line. It does not say
@@ -104,25 +172,32 @@ actually promise:
 | `--secret` (prompt) | nothing | warden controls the channel end to end |
 | `--secret --from-file <path>` | a path | warden opens the file itself |
 | `--secret --generate` | nothing | warden mints the value; nobody learns it |
-| `--secret` with piped stdin | the value | **none** — see below |
+| `--secret --stdin` | the value | **none** — see below |
 
 The first three are structural: there is no point at which the caller could
 read the value, whatever it intends. A pipe is not. `openssl rand -hex 32 |
-warden set --secret K` is perfectly safe when you type it, and gives warden
-nothing to stand behind when an agent types it — whoever built the pipeline had
-the value before warden did. It is supported because your terminal is yours, and
-the confirmation line names the channel so a reader can tell the cases apart:
+warden set --secret K --stdin` is perfectly safe when you type it, and gives
+warden nothing to stand behind when an agent types it — whoever built the
+pipeline had the value before warden did. It is supported because your terminal
+is yours, and the confirmation line names the channel so a reader can tell the
+cases apart.
 
-Only an actual pipe counts. `warden set --secret K < file` prompts as usual,
-because a script invoked as `./deploy.sh < input` hands every command it runs a
-redirected stdin, and warden reading that would store the script's input as your
-credential without asking. Use `--from-file`, which cannot happen by accident.
+**It has to be asked for by name.** warden used to infer this channel whenever
+standard input happened to be a pipe, and that was wrong in a way worth
+recording: spawning a child process with `stdin=PIPE` is simply how process
+runners work, so every agent that ran `warden set --secret KEY` handed warden a
+pipe nobody had written a value to. warden read it, found nothing, and reported
+`cancelled` — which reads as *the user declined*, so the one command agents are
+told to use for secrets could not be made to work at all. A pipe on standard
+input is evidence of how warden was started, never evidence that somebody piped
+a credential into it. Without `--stdin` you get the prompt, whatever your caller
+wired up.
 
 ```
 ok: K set (secret) in .env                  ← prompt
 ok: K set (secret, from creds.txt) in .env  ← file
 ok: K set (secret, generated) in .env       ← generated
-ok: K set (secret, from stdin) in .env      ← caller-supplied
+ok: K set (secret, from stdin) in .env      ← caller-supplied, via --stdin
 ```
 
 `--generate` is the answer for a credential that has leaked. Rotating by hand
@@ -493,11 +568,17 @@ can ask what a key's class is but never change it.
 ## MCP surface
 
 `warden mcp` serves the same surface on stdio: `env_has`, `env_list`,
-`env_missing`, `env_get`, `env_doctor`, `env_refs`, `env_set`,
+`env_missing`, `env_get`, `env_doctor`, `env_init`, `env_refs`, `env_set`,
 `env_request_secret`, `env_unset`, `env_clear`, `env_classify`, plus the vault's
 `vault_list`, `vault_has`, `vault_request_secret`, `vault_delete` and
 `vault_push`. Every env tool takes an optional `project` path, because the
 server's working directory will not reliably match the project under discussion.
+
+`env_init` is on this surface on purpose, unlike the vault's `init`. An agent
+that cannot call it does not skip creating the file — it creates it some other
+way, and `touch`, a redirect and a copy of `.env.example` all apply the umask.
+Since the tool reveals nothing and destroys nothing, making the safe path the
+available one is strictly better than leaving agents the unsafe ones.
 
 Five things are deliberately CLI-only, and a test makes each omission deliberate
 rather than accidental: `classify --set` (an agent may ask a key's class, never

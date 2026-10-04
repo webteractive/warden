@@ -16,8 +16,10 @@ import (
 // before warden did, and no amount of care on this side changes that.
 //
 // It is supported because a human at their own terminal is not that caller, and
-// for them the convenience is real. The CLI names this channel in its output so
-// the weaker guarantee is visible in a transcript rather than assumed.
+// for them the convenience is real. Being the weakest channel, it is the only
+// one that must be asked for by name: see the --stdin flag. The CLI also names
+// it in its output, so the weaker guarantee is visible in a transcript rather
+// than assumed.
 type Stdin struct {
 	Prompter
 	In io.Reader
@@ -33,5 +35,14 @@ func (s Stdin) AskSecret(string, string) (secret.Secret, error) {
 		// the only useful fact is that the read did not finish.
 		return "", errors.New("reading standard input failed")
 	}
-	return fromRaw(string(raw))
+	v, err := fromRaw(string(raw))
+	if errors.Is(err, ErrCancelled) {
+		// fromRaw reports an empty value as a cancellation, which is right for a
+		// dialog somebody dismissed and wrong here. Nothing was dismissed:
+		// --stdin was passed and the descriptor delivered nothing. Reporting
+		// that as "cancelled" is what taught callers to give up — the message
+		// read as though the user had refused.
+		return "", ErrNoValue
+	}
+	return v, err
 }

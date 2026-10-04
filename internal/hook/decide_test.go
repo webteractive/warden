@@ -81,6 +81,30 @@ func TestADenialNamesTheWardenCommandsToUseInstead(t *testing.T) {
 	}
 }
 
+// Naming only --secret was not enough, and the gap had a specific shape: an
+// agent that had *already* printed a credential was told to have the user type
+// it into a prompt, which protects nothing the value has lost. Given advice that
+// plainly does not fit, agents wrote the file by hand instead. The denial has to
+// carry the whole set and the test for choosing between them, because this text
+// is the one an agent is guaranteed to read.
+func TestADenialNamesEveryWriteChannelAndHowToChoose(t *testing.T) {
+	reason := Decide(Request{ToolName: "Bash", Command: "cat .env"})
+	for _, want := range []string{
+		"warden set --secret KEY",
+		"--from-file",
+		"--generate",
+		"warden set --exposed KEY",
+		// Without the test for choosing, --exposed reads as the convenient one
+		// and becomes the way around every refusal.
+		"already have it",
+		"not a way around a refusal",
+	} {
+		if !contains(reason, want) {
+			t.Errorf("denial should name %q:\n%s", want, reason)
+		}
+	}
+}
+
 // The tool must never describe itself as a security boundary. The pattern list
 // is a speed bump list: python -c, a heredoc, a base64 round trip and a dotenv
 // loader all walk straight past it. A false claim here is worse than no hook,

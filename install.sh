@@ -47,7 +47,7 @@ if [ "$MODE" = "source" ]; then
 
   version="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
   mkdir -p "$INSTALL_DIR"
-  go build -ldflags "-s -w -X github.com/webteractive/warden/internal/mcpserver.version=$version" \
+  go build -ldflags "-s -w -X github.com/webteractive/warden/internal/buildinfo.version=$version" \
     -o "$INSTALL_DIR/$BIN" ./cmd/warden
 
   printf 'Built and installed %s %s to %s/%s\n' "$BIN" "$version" "$INSTALL_DIR" "$BIN"

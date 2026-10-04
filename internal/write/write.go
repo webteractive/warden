@@ -22,6 +22,16 @@ import (
 // offered for it, is sensitive.
 var ErrSecretKey = errors.New("key is secret — use set --secret")
 
+// ErrCredentialShape means the refusal came from the value rather than the key:
+// an innocent key name is not permission to store a live API key in the clear.
+//
+// It accompanies ErrSecretKey rather than replacing it, so callers matching on
+// the refusal keep working while a surface that wants to explain *which* of the
+// two happened can ask. The distinction changes the advice: a secret key needs a
+// different channel, whereas a public key holding a credential-shaped value
+// usually means the key was misclassified.
+var ErrCredentialShape = errors.New("the value looks like a credential")
+
 // ErrUnwaivableShape means a key could not be made public because its value is a
 // recognised credential format. Classify puts shape ahead of the schema, so the
 // override would have been inert — this is a refusal rather than a silent no-op.
@@ -115,7 +125,7 @@ func (w *W) SetPublic(key, value string) error {
 		return fmt.Errorf("%s: %w", key, ErrSecretKey)
 	}
 	if classify.Classify(key, secret.Secret(value), w.userSchema, w.projectSchema).Class == classify.Secret {
-		return fmt.Errorf("%s: %w (the value looks like a credential)", key, ErrSecretKey)
+		return fmt.Errorf("%s: %w (%w)", key, ErrSecretKey, ErrCredentialShape)
 	}
 	if err := w.st.Set(key, value); err != nil {
 		return err

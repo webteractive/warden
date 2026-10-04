@@ -101,7 +101,7 @@ func errResult(format string, a ...any) *mcp.CallToolResult {
 // the other side.
 func ToolNames() []string {
 	return []string{
-		"env_has", "env_list", "env_missing", "env_get", "env_doctor",
+		"env_has", "env_list", "env_missing", "env_get", "env_doctor", "env_init",
 		"env_set", "env_request_secret", "env_unset", "env_clear", "env_classify", "env_refs",
 		// The vault. There is deliberately no vault_set (no entry is public),
 		// no vault_edit and no vault_init (both CLI-only) — internal/cli's
@@ -147,6 +147,27 @@ func New(p prompt.Prompter) *mcp.Server {
 			rows = append(rows, row{r.Key, r.Class.String(), r.Set})
 		}
 		return nil, rows, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "env_init",
+		Description: "Create the env file this scope writes to (.env, or ~/.secrets with global), " +
+			"with permissions that let only its owner read it. Safe to re-run: an existing file " +
+			"keeps its contents, and loose permissions on one are tightened. Use this instead of " +
+			"creating .env yourself — touch, a shell redirect, or copying .env.example all apply " +
+			"the umask and commonly leave a file of credentials readable by every account on the " +
+			"machine.",
+	}, func(_ context.Context, _ *mcp.CallToolRequest, a scopeArgs) (*mcp.CallToolResult, any, error) {
+		res, err := write.Create(a.scope())
+		if err != nil {
+			return errResult("warden: %v", err), nil, nil
+		}
+		return nil, map[string]any{
+			"path":      res.Path,
+			"created":   res.Created,
+			"tightened": res.Tightened,
+			"mode":      fmt.Sprintf("%04o", res.Mode),
+		}, nil
 	})
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -199,9 +220,21 @@ func New(p prompt.Prompter) *mcp.Server {
 		}
 		if err := w.SetPublic(a.Key, a.Value); err != nil {
 			if errors.Is(err, write.ErrSecretKey) {
+				// The CLI offers --exposed here, and this surface deliberately
+				// does not: accepting a value on the caller's terms is safe when
+				// a human types the flag and is not safe as a tool call, which
+				// internal/cli's arch test enforces. That makes it all the more
+				// important to say what *is* available, because the value has
+				// already crossed into the transcript by the time this is read —
+				// a caller left without a next step writes the file by hand.
 				return errResult(
-					"warden: %s is secret — call env_request_secret instead so the user types the value",
-					a.Key), nil, nil
+					"warden: %s is secret, so it was not written. That value has already "+
+						"crossed into this transcript. If the user holds it, call "+
+						"env_request_secret so they type it into a prompt you never see. "+
+						"If you already had it, it is burned: it needs `warden set --exposed "+
+						"%s <value>` run at a terminal, which records the exposure, and the "+
+						"credential should be rotated.",
+					a.Key, a.Key), nil, nil
 			}
 			return errResult("warden: %v", err), nil, nil
 		}

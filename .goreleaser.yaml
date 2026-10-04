@@ -23,7 +23,9 @@ builds:
       - amd64
       - arm64
     ldflags:
-      - -s -w -X github.com/webteractive/warden/internal/mcpserver.version={{ .Version }}
+      # The injection path is checked by internal/buildinfo's test: a typo here
+      # is silent and ships a binary that reports itself as "dev".
+      - -s -w -X github.com/webteractive/warden/internal/buildinfo.version={{ .Version }} -X github.com/webteractive/warden/internal/buildinfo.commit={{ .FullCommit }} -X github.com/webteractive/warden/internal/buildinfo.date={{ .CommitDate }}
 
 archives:
   - id: warden

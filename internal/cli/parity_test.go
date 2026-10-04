@@ -44,11 +44,21 @@ var parity = map[string]string{
 	"missing":  "env_missing",
 	"classify": "env_classify", // --set is CLI-only: an agent may ask a key's class, never change it
 	"doctor":   "env_doctor",
-	"set":      "env_set", // plus env_request_secret for --secret
-	"unset":    "env_unset",
-	"clear":    "env_clear",
-	"refs":     "env_refs",
-	"mcp":      "", // the server itself; there is nothing to mirror
+	// Exposed on purpose, unlike the other file-shaping commands. An agent that
+	// cannot call this creates the file some other way — touch, a redirect, a
+	// copy of .env.example — and every one of those applies the umask and leaves
+	// the credentials readable by every account on the machine. It reveals
+	// nothing and destroys nothing, so the safe path is the available one.
+	"init":  "env_init",
+	"set":   "env_set", // plus env_request_secret for --secret
+	"unset": "env_unset",
+	"clear": "env_clear",
+	"refs":  "env_refs",
+	"mcp":   "", // the server itself; there is nothing to mirror
+	// No tool, because MCP already answers this: the server reports its version
+	// in the initialise handshake, so a client has the number before it could
+	// call anything. internal/buildinfo is the single source both read.
+	"version": "",
 	// Deliberately CLI-only. A tool that edits the harness's own permission
 	// configuration is a privilege-escalation primitive, and an agent asking to
 	// relax its own restrictions is precisely what this hook exists to stop.

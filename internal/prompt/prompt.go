@@ -26,6 +26,12 @@ var (
 	ErrCancelled = errors.New("cancelled")
 	// ErrUnavailable means there is no channel to ask the user through.
 	ErrUnavailable = errors.New("no interactive prompt available")
+	// ErrNoValue means a non-interactive channel was selected and delivered
+	// nothing. Deliberately distinct from ErrCancelled: nobody dismissed
+	// anything, so a caller reading "cancelled" would conclude the user said no
+	// and stop trying, when what actually happened is that the channel it chose
+	// was empty.
+	ErrNoValue = errors.New("no value arrived on the channel")
 )
 
 // timeoutSentinel distinguishes a timeout from an empty answer. AppleScript

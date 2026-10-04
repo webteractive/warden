@@ -30,7 +30,22 @@ const guidance = `Use warden, which answers this without exposing values:
   warden doctor             what is wrong here
   warden refs               keys the code reads and the file does not set
   warden get KEY            public keys only
-  warden set --secret KEY   the user types the value; you never see it
+
+To write a key, pick by where the value already is:
+  you do not have it        warden set --secret KEY
+                            the user types it into a prompt you never see
+  it is in a file           warden set --secret KEY --from-file PATH
+                            warden opens the file; do not cat it first
+  it needs to be new        warden set --secret KEY --generate
+                            warden mints it; nobody learns it, including you
+  you already have it       warden set --exposed KEY VALUE
+                            it was printed by a tool, pasted by the user, or is
+                            in scrollback; this records that it is burned
+  it is not sensitive       warden set KEY VALUE
+
+--exposed is only for a value that is already out. If you do not have the
+value, use --secret — --exposed is not a way around a refusal. Never run it
+on a value you got by reading .env or ~/.secrets.
 Add --global for ~/.secrets, --project DIR to pick the project.`
 
 // readTools open a file by path.
@@ -95,9 +110,14 @@ func Decide(r Request) string {
 	return ""
 }
 
+// segmentRe matches the operators that join separate commands. Compiled once at
+// package level like the other two patterns here — this one sits on the hook's
+// hot path, which runs on every Bash call the harness makes.
+var segmentRe = regexp.MustCompile(`&&|\|\||;|\||\n`)
+
 // splitSegments breaks a command on the operators that join separate commands.
 func splitSegments(cmd string) []string {
-	return regexp.MustCompile(`&&|\|\||;|\||\n`).Split(cmd, -1)
+	return segmentRe.Split(cmd, -1)
 }
 
 func deniedSegment(seg string) bool {
@@ -109,11 +129,15 @@ func deniedSegment(seg string) bool {
 	if filepath.Base(fields[0]) == "warden" {
 		return false
 	}
-	if redirectRe.MatchString(seg) && mentionsProtected(seg) {
-		return true
-	}
+	// Nothing protected is named, so nothing here can be a read of one. Asking
+	// first makes the redirect check below a plain one and saves a second scan
+	// of the segment in the common case.
 	if !mentionsProtected(seg) {
 		return false
+	}
+	// `... < .env` is the read itself, with no reader command in the segment.
+	if redirectRe.MatchString(seg) {
+		return true
 	}
 	for _, f := range fields {
 		if readers[commandToken(f)] {
