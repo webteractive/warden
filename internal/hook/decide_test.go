@@ -118,6 +118,172 @@ func TestNothingClaimsThisIsSecurity(t *testing.T) {
 	}
 }
 
+// The guard used to read only file_path and command, so Grep walked straight
+// past it: a path naming the file, or a glob that selects it, is the same read.
+func TestDecideOnGrep(t *testing.T) {
+	for _, tc := range []struct {
+		name, path, glob string
+		deny             bool
+	}{
+		{"grepping the env file itself", "/p/.env", "", true},
+		{"grepping the secrets file", "/Users/x/.secrets", "", true},
+		{"a glob naming the env file", "/p", ".env", true},
+		{"a glob over scoped env files", "/p", ".env.*", true},
+		{"a recursive glob naming one", "/p", "**/.env.local", true},
+		{"a brace glob naming one", "/p", "{.env,.env.local}", true},
+		{"a glob for files ending in env", "/p", "*.env", true},
+		{"a glob naming the secrets file", "/Users/x", ".secrets", true},
+
+		{"a source tree", "/p/src", "", false},
+		{"a glob for source files", "/p", "*.ts", false},
+		{"a brace glob for source files", "/p", "*.{ts,tsx}", false},
+		{"a catch-all glob names nothing", "/p", "*", false},
+		{"the example file is meant to be read", "/p", ".env.example", false},
+		{"no path at all", "", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Decide(Request{ToolName: "Grep", FilePath: tc.path, Glob: tc.glob}) != ""
+			if got != tc.deny {
+				t.Errorf("deny = %v, want %v for path=%q glob=%q", got, tc.deny, tc.path, tc.glob)
+			}
+		})
+	}
+}
+
+// warden is exempt because it reads these files without printing them. That
+// holds for warden itself, not for whatever else rides in its segment: a
+// substitution runs first, and cobra echoes an unknown argument back in its
+// error, so `warden list $(cat .env)` prints the file through warden.
+func TestTheWardenExemptionCoversWardenAlone(t *testing.T) {
+	for _, tc := range []struct {
+		name, cmd string
+		deny      bool
+	}{
+		{"a substitution in warden's arguments", "warden list $(cat .env)", true},
+		{"backticks in warden's arguments", "warden has `cat .env`", true},
+		{"a process substitution in warden's arguments", "warden list --file <(cat .env)", true},
+		{"a redirect into warden", "warden has KEY < .env", true},
+		{"a relative binary merely named warden", "./tools/warden list --file .env", false},
+		{"a relative binary named warden that runs a reader", "./tools/warden cat .env", true},
+
+		{"warden by name", "warden list --file .env.staging", false},
+		{"warden by absolute path", "/Users/x/.local/bin/warden list --file .env.staging", false},
+		{"warden from home", "~/.local/bin/warden doctor --project ~/app/.env", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Decide(Request{ToolName: "Bash", Command: tc.cmd}) != ""
+			if got != tc.deny {
+				t.Errorf("deny = %v, want %v for %q", got, tc.deny, tc.cmd)
+			}
+		})
+	}
+}
+
+// A reader inside a process substitution is still a reader: `<(cat .env)` hands
+// the file to any command, and none of them needs to be on the reader list.
+func TestAProcessSubstitutionIsARead(t *testing.T) {
+	for _, cmd := range []string{"diff <(cat .env) .env.example", "paste >(cat) <(head .env)"} {
+		if Decide(Request{ToolName: "Bash", Command: cmd}) == "" {
+			t.Errorf("%q should be denied", cmd)
+		}
+	}
+}
+
+// A Monitor's command is a shell command whose output reaches the model line by
+// line, so it is judged exactly as Bash is.
+func TestDecideOnMonitorCommands(t *testing.T) {
+	for _, tc := range []struct {
+		name, cmd string
+		deny      bool
+	}{
+		{"tailing the env file", "tail -f .env", true},
+		{"a loop over the secrets file", "while sleep 5; do cat ~/.secrets; done", true},
+		{"tailing a log", "tail -f storage/logs/laravel.log", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Decide(Request{ToolName: "Monitor", Command: tc.cmd}) != ""
+			if got != tc.deny {
+				t.Errorf("deny = %v, want %v for %q", got, tc.deny, tc.cmd)
+			}
+		})
+	}
+}
+
+// A caller that words its own message — the Claude Code mod — needs to know
+// which file a denial was about without matching the text. When one command
+// names both, the stricter target wins.
+func TestDetailNamesTheTarget(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		req  Request
+		want Target
+	}{
+		{"reading .env", Request{ToolName: "Read", FilePath: "/p/.env"}, TargetEnv},
+		{"reading ~/.secrets", Request{ToolName: "Read", FilePath: "/Users/x/.secrets"}, TargetSecrets},
+		{"a scoped env file", Request{ToolName: "Bash", Command: "cat .env.local"}, TargetEnv},
+		{"both in one command", Request{ToolName: "Bash", Command: "cat .env && cat ~/.secrets"}, TargetSecrets},
+		{"a grep glob naming .secrets", Request{ToolName: "Grep", FilePath: "/Users/x", Glob: ".secrets"}, TargetSecrets},
+		{"an allowed call", Request{ToolName: "Bash", Command: "ls"}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := Detail(tc.req)
+			if d.Target != tc.want {
+				t.Errorf("target = %q, want %q", d.Target, tc.want)
+			}
+			if (d.Reason != "") != (tc.want != "") {
+				t.Errorf("reason %q does not agree with target %q", d.Reason, d.Target)
+			}
+		})
+	}
+}
+
+// There is no override for editing an env file: the harness's Edit and Write
+// refuse a file that has not been read, so allowing an edit would allow the
+// read. The denial has to say where changes go instead, or the next attempt is
+// a hand-rolled sed.
+func TestAWriteDenialSaysWardenMakesEveryChange(t *testing.T) {
+	for _, tool := range []string{"Edit", "Write", "NotebookEdit"} {
+		reason := Decide(Request{ToolName: tool, FilePath: "/p/.env"})
+		for _, want := range []string{"not edited directly", "warden unset", "warden clear", "warden init"} {
+			if !contains(reason, want) {
+				t.Errorf("%s denial should name %q:\n%s", tool, want, reason)
+			}
+		}
+	}
+	if reason := Decide(Request{ToolName: "Read", FilePath: "/p/.env"}); contains(reason, "not edited directly") {
+		t.Errorf("a read denial should not talk about edits:\n%s", reason)
+	}
+}
+
+func TestASecretsDenialSaysItIsNeverReadable(t *testing.T) {
+	reason := Decide(Request{ToolName: "Bash", Command: "source ~/.secrets"})
+	for _, want := range []string{"never readable", "--global"} {
+		if !contains(reason, want) {
+			t.Errorf("a .secrets denial should name %q:\n%s", want, reason)
+		}
+	}
+	if reason := Decide(Request{ToolName: "Bash", Command: "cat .env"}); contains(reason, "never readable") {
+		t.Errorf("an .env denial should not claim the .secrets rule:\n%s", reason)
+	}
+}
+
+// The added lines are new text a denial can carry, so the security-claim check
+// covers them too.
+func TestNoTargetedLineClaimsThisIsSecurity(t *testing.T) {
+	for _, r := range []Request{
+		{ToolName: "Write", FilePath: "/p/.env"},
+		{ToolName: "Read", FilePath: "/Users/x/.secrets"},
+		{ToolName: "Grep", FilePath: "/p", Glob: ".env"},
+	} {
+		reason := Decide(r)
+		for _, banned := range []string{"secure", "security boundary", "prevents", "protects you"} {
+			if contains(reason, banned) {
+				t.Errorf("denial claims more than it can deliver (%q):\n%s", banned, reason)
+			}
+		}
+	}
+}
+
 func contains(haystack, needle string) bool {
 	return len(haystack) >= len(needle) && (haystack == needle ||
 		len(needle) == 0 || indexOf(haystack, needle) >= 0)

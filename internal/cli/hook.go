@@ -23,9 +23,20 @@ var GuardInput io.Reader = os.Stdin
 type guardPayload struct {
 	ToolName  string `json:"tool_name"`
 	ToolInput struct {
-		Command  string `json:"command"`
-		FilePath string `json:"file_path"`
+		Command      string `json:"command"`
+		FilePath     string `json:"file_path"`
+		NotebookPath string `json:"notebook_path"`
+		Path         string `json:"path"`
+		Glob         string `json:"glob"`
 	} `json:"tool_input"`
+}
+
+// guardAnswer is --guard's --json output: the decision, and on a denial the
+// file it was about and the text to show. The exit code is unchanged by --json.
+type guardAnswer struct {
+	Decision string `json:"decision"`
+	Target   string `json:"target,omitempty"`
+	Reason   string `json:"reason,omitempty"`
 }
 
 // guardCommand is what the installed hook runs.
@@ -65,7 +76,7 @@ func addHookCommand(root *cobra.Command, out io.Writer) {
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if guard, _ := cmd.Flags().GetBool("guard"); guard {
-				return runGuard()
+				return runGuard(out, jsonFlag(cmd))
 			}
 			if target, _ := cmd.Flags().GetString("target"); target != "claude" {
 				return &ExitError{Code: CodeError, Msg: fmt.Sprintf(
@@ -162,28 +173,58 @@ func settingsPath(cmd *cobra.Command) (string, error) {
 
 // runGuard decides one tool call. Exit 2 is warden's "refused by policy", and
 // also how a harness reads a blocked call — the two meanings coincide exactly.
+// With --json the decision is also written to stdout, and the reason travels
+// there instead of on stderr.
 //
 // Every failure here fails open. A guard that cannot parse its payload must not
 // block every tool call in the session; a hook that breaks a working harness
 // gets deleted, and then nothing is guarded at all.
-func runGuard() error {
+func runGuard(out io.Writer, asJSON bool) error {
+	d := decideGuard()
+	if asJSON {
+		answer := guardAnswer{Decision: "allow"}
+		if d.Reason != "" {
+			answer = guardAnswer{Decision: "deny", Target: string(d.Target), Reason: d.Reason}
+		}
+		if err := json.NewEncoder(out).Encode(answer); err != nil {
+			return nil
+		}
+		if d.Reason != "" {
+			return &ExitError{Code: CodeRefused}
+		}
+		return nil
+	}
+	if d.Reason == "" {
+		return nil
+	}
+	return &ExitError{Code: CodeRefused, Msg: d.Reason}
+}
+
+// decideGuard reads the payload and decides it; anything unreadable allows.
+func decideGuard() hook.Decision {
 	body, err := io.ReadAll(GuardInput)
 	if err != nil {
-		return nil
+		return hook.Decision{}
 	}
 	var p guardPayload
 	if err := json.Unmarshal(body, &p); err != nil {
-		return nil
+		return hook.Decision{}
 	}
-	reason := hook.Decide(hook.Request{
+	// Each tool names its file in a field of its own; Decide only needs to
+	// know which one this call used.
+	path := p.ToolInput.FilePath
+	if path == "" {
+		path = p.ToolInput.NotebookPath
+	}
+	if path == "" {
+		path = p.ToolInput.Path
+	}
+	return hook.Detail(hook.Request{
 		ToolName: p.ToolName,
-		FilePath: p.ToolInput.FilePath,
+		FilePath: path,
 		Command:  p.ToolInput.Command,
+		Glob:     p.ToolInput.Glob,
 	})
-	if reason == "" {
-		return nil
-	}
-	return &ExitError{Code: CodeRefused, Msg: reason}
 }
 
 func runHookCheck(out io.Writer, path string) error {

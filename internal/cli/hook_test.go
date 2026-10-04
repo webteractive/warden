@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -184,5 +185,70 @@ func TestCheckPassesWhenTheGuardRuns(t *testing.T) {
 
 	if _, _, code := run(t, "hook", "--check", "--settings", path); code != 0 {
 		t.Errorf("code = %d, want 0", code)
+	}
+}
+
+// The payload used to be read for file_path and command only, so these three
+// tools reached Decide with nothing in them and were always allowed.
+func TestGuardReadsEveryFieldThatCanNameAFile(t *testing.T) {
+	for _, tc := range []struct{ name, body string }{
+		{"a notebook path", `{"tool_name":"NotebookEdit","tool_input":{"notebook_path":"/p/.env","new_source":"x"}}`},
+		{"a grep path", `{"tool_name":"Grep","tool_input":{"pattern":"TOKEN","path":"/p/.env"}}`},
+		{"a grep glob", `{"tool_name":"Grep","tool_input":{"pattern":"TOKEN","path":"/p","glob":".env*"}}`},
+		{"a monitor command", `{"tool_name":"Monitor","tool_input":{"command":"tail -f .env","timeout_ms":1000,"description":"x"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withGuardInput(t, tc.body)
+			if _, _, code := run(t, "hook", "--guard"); code != 2 {
+				t.Errorf("code = %d, want 2", code)
+			}
+		})
+	}
+}
+
+func guardJSON(t *testing.T, body string) (guardAnswer, string, int) {
+	t.Helper()
+	withGuardInput(t, body)
+	out, errw, code := run(t, "hook", "--guard", "--json")
+	var a guardAnswer
+	if err := json.Unmarshal([]byte(out), &a); err != nil {
+		t.Fatalf("stdout is not JSON (%v): %q", err, out)
+	}
+	return a, errw, code
+}
+
+// A caller that words its own messages — the Claude Code mod — needs the
+// decision and its target without parsing prose. The exit codes stay what the
+// settings hook already relies on.
+func TestGuardJSONDescribesADenial(t *testing.T) {
+	a, errw, code := guardJSON(t, `{"tool_name":"Bash","tool_input":{"command":"cat .env"}}`)
+	if code != 2 {
+		t.Errorf("code = %d, want 2", code)
+	}
+	if a.Decision != "deny" || a.Target != "env" || !strings.Contains(a.Reason, "warden has") {
+		t.Errorf("answer = %+v", a)
+	}
+	if errw != "" {
+		t.Errorf("under --json the reason is on stdout only; stderr = %q", errw)
+	}
+
+	a, _, _ = guardJSON(t, `{"tool_name":"Read","tool_input":{"file_path":"/Users/x/.secrets"}}`)
+	if a.Target != "secrets" {
+		t.Errorf("target = %q, want secrets", a.Target)
+	}
+}
+
+func TestGuardJSONDescribesAnAllow(t *testing.T) {
+	a, errw, code := guardJSON(t, `{"tool_name":"Bash","tool_input":{"command":"ls"}}`)
+	if code != 0 || a.Decision != "allow" || a.Target != "" || a.Reason != "" || errw != "" {
+		t.Errorf("code=%d answer=%+v stderr=%q", code, a, errw)
+	}
+}
+
+// Failing open is unchanged by --json; it only says so in a form a program reads.
+func TestGuardJSONFailsOpenOnAnUnreadablePayload(t *testing.T) {
+	a, _, code := guardJSON(t, `not json`)
+	if code != 0 || a.Decision != "allow" {
+		t.Errorf("code=%d answer=%+v", code, a)
 	}
 }

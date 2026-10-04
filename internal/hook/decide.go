@@ -9,16 +9,36 @@
 package hook
 
 import (
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
 )
 
-// Request is one tool call, reduced to the two fields that matter.
+// Request is one tool call, reduced to the fields that matter.
 type Request struct {
 	ToolName string
 	FilePath string
 	Command  string
+	// Glob is Grep's file filter. A glob that selects an env file reads it as
+	// surely as a path naming one.
+	Glob string
+}
+
+// Target names which kind of file a denial was about, so a caller that words
+// its own message does not have to match this package's text.
+type Target string
+
+const (
+	TargetEnv     Target = "env"
+	TargetSecrets Target = "secrets"
+)
+
+// Decision is a denial's text and the file it was about. The zero value allows
+// the call.
+type Decision struct {
+	Reason string
+	Target Target
 }
 
 // guidance is the denial message. It is the actual feature: an unexplained
@@ -48,6 +68,27 @@ value, use --secret — --exposed is not a way around a refusal. Never run it
 on a value you got by reading .env or ~/.secrets.
 Add --global for ~/.secrets, --project DIR to pick the project.`
 
+// editNote follows a denied edit. There is no override for editing an env file
+// directly: the harness's Edit and Write refuse a file that has not been read,
+// so allowing an edit would allow the read. Saying where changes go instead is
+// what stops the next attempt being a hand-rolled sed.
+const editNote = `Env files are not edited directly — warden makes every change:
+  warden set ...            add or change a key, through a channel above
+  warden unset KEY          remove a key
+  warden clear KEY          empty a key, keeping it declared
+  warden init               create the file, readable only by you (0600)`
+
+// secretsNote follows any denial that touches .secrets, which unlike .env has
+// no circumstance under which reading it is permitted.
+const secretsNote = `~/.secrets is never readable, under any request. Add --global to the commands above.`
+
+// editTools change a file, as opposed to only reading it.
+var editTools = map[string]bool{"Edit": true, "Write": true, "NotebookEdit": true}
+
+// shellTools run a shell command whose output reaches the model. A Monitor's
+// command streams it line by line, which is the same read.
+var shellTools = map[string]bool{"Bash": true, "Monitor": true}
+
 // readTools open a file by path.
 var readTools = map[string]bool{
 	"Read": true, "Edit": true, "Write": true, "NotebookEdit": true,
@@ -73,8 +114,10 @@ var readers = map[string]bool{
 const envFileNames = `(\.env(\.[A-Za-z0-9_-]+)?|\.secrets)`
 
 // envFileRe matches a path that names an env file. The surrounding guards keep
-// envy.md and .environment out; group 2 is the name itself.
-var envFileRe = regexp.MustCompile(`(^|[/\s"'=(])` + envFileNames + `($|[\s"'):;&|])`)
+// envy.md and .environment out; group 2 is the name itself. A backtick counts
+// as a boundary on either side, so `cat .env` in backticks still names the
+// file; it is spelled \x60 because a raw string cannot hold one.
+var envFileRe = regexp.MustCompile(`(^|[/\s"'=(\x60])` + envFileNames + `($|[\s"'):;&|\x60])`)
 
 // redirectRe catches `... < .env`, where the redirect is the read and no reader
 // command appears anywhere in the segment.
@@ -91,23 +134,114 @@ func IsProtected(path string) bool {
 
 // Decide returns the reason a call must be denied, or "" to allow it.
 func Decide(r Request) string {
-	if readTools[r.ToolName] {
+	return Detail(r).Reason
+}
+
+// Detail decides a call and says which file a denial was about.
+func Detail(r Request) Decision {
+	switch {
+	case readTools[r.ToolName]:
 		if IsProtected(r.FilePath) {
-			return "Denied: reading " + filepath.Base(r.FilePath) + " directly.\n\n" + guidance
+			return deny("reading "+filepath.Base(r.FilePath)+" directly", r.ToolName, targetOf(r.FilePath))
 		}
+	case r.ToolName == "Grep":
+		if IsProtected(r.FilePath) {
+			return deny("searching "+filepath.Base(r.FilePath)+" directly", r.ToolName, targetOf(r.FilePath))
+		}
+		if t := globTarget(r.Glob); t != "" {
+			return deny("searching an env file through a glob", r.ToolName, t)
+		}
+	case shellTools[r.ToolName]:
+		// Judge each segment on its own, so a chained read is not laundered by a
+		// harmless command sitting next to it. Every segment is judged, so a
+		// command naming both files is reported against the stricter one.
+		var target Target
+		for _, seg := range splitSegments(r.Command) {
+			target = stricter(target, deniedSegment(seg))
+		}
+		if target != "" {
+			return deny("reading an env file directly", r.ToolName, target)
+		}
+	}
+	return Decision{}
+}
+
+// deny assembles a denial: what was refused, the replacements, and the notes
+// that only some denials need.
+func deny(what, tool string, target Target) Decision {
+	reason := "Denied: " + what + ".\n\n" + guidance
+	if editTools[tool] {
+		reason += "\n\n" + editNote
+	}
+	if target == TargetSecrets {
+		reason += "\n\n" + secretsNote
+	}
+	return Decision{Reason: reason, Target: target}
+}
+
+// targetOf names the target for a file the guard protects.
+func targetOf(name string) Target {
+	if filepath.Base(strings.TrimSpace(name)) == ".secrets" {
+		return TargetSecrets
+	}
+	return TargetEnv
+}
+
+// stricter returns whichever target carries more weight; "" is no target.
+func stricter(a, b Target) Target {
+	if a == TargetSecrets || b == TargetSecrets {
+		return TargetSecrets
+	}
+	if a != "" {
+		return a
+	}
+	return b
+}
+
+// globCandidates are names a glob is tried against. A glob that names one of
+// them, or that is itself shaped like a protected name, selects a protected file.
+var globCandidates = []string{".env", ".env.local", ".env.production", ".secrets"}
+
+// globTarget reports the target a Grep glob selects, or "". A glob must name an
+// env file to select one: `*` and `*.*` match .env as surely as `.env` does, but
+// they are how every search over a tree is written, and denying them would deny
+// Grep outright. ripgrep skips hidden files under them by default anyway.
+func globTarget(glob string) Target {
+	if !strings.Contains(glob, "env") && !strings.Contains(glob, "secrets") {
 		return ""
 	}
-	if r.ToolName != "Bash" {
-		return ""
-	}
-	// Judge each segment on its own, so a chained read is not laundered by a
-	// harmless command sitting next to it.
-	for _, seg := range splitSegments(r.Command) {
-		if deniedSegment(seg) {
-			return "Denied: reading an env file directly.\n\n" + guidance
+	var target Target
+	for _, alt := range expandBraces(glob) {
+		base := path.Base(alt)
+		if IsProtected(base) {
+			target = stricter(target, targetOf(base))
+			continue
+		}
+		for _, name := range globCandidates {
+			if ok, _ := path.Match(base, name); ok {
+				target = stricter(target, targetOf(name))
+			}
 		}
 	}
-	return ""
+	return target
+}
+
+// expandBraces expands `{a,b}` alternatives, which path.Match does not know.
+func expandBraces(glob string) []string {
+	open := strings.Index(glob, "{")
+	if open < 0 {
+		return []string{glob}
+	}
+	end := strings.Index(glob[open:], "}")
+	if end < 0 {
+		return []string{glob}
+	}
+	end += open
+	var out []string
+	for _, alt := range strings.Split(glob[open+1:end], ",") {
+		out = append(out, expandBraces(glob[:open]+alt+glob[end+1:])...)
+	}
+	return out
 }
 
 // segmentRe matches the operators that join separate commands. Compiled once at
@@ -120,48 +254,68 @@ func splitSegments(cmd string) []string {
 	return segmentRe.Split(cmd, -1)
 }
 
-func deniedSegment(seg string) bool {
+// deniedSegment returns the target a segment reads, or "" when it reads none.
+func deniedSegment(seg string) Target {
 	fields := strings.Fields(seg)
 	if len(fields) == 0 {
-		return false
+		return ""
 	}
 	// warden reads these files; that is the point of it.
-	if filepath.Base(fields[0]) == "warden" {
-		return false
+	if runsOnlyWarden(fields[0], seg) {
+		return ""
 	}
 	// Nothing protected is named, so nothing here can be a read of one. Asking
 	// first makes the redirect check below a plain one and saves a second scan
 	// of the segment in the common case.
-	if !mentionsProtected(seg) {
-		return false
+	target := mentionsProtected(seg)
+	if target == "" {
+		return ""
 	}
 	// `... < .env` is the read itself, with no reader command in the segment.
 	if redirectRe.MatchString(seg) {
-		return true
+		return target
 	}
 	for _, f := range fields {
 		if readers[commandToken(f)] {
-			return true
+			return target
 		}
 	}
-	return false
+	return ""
+}
+
+// runsOnlyWarden reports whether a segment runs warden and nothing else. The
+// exemption is for warden reading a file without printing it; it does not cover
+// a substitution or redirect riding in the same segment, which runs first and
+// whose output cobra echoes back in an unknown-argument error. warden is taken
+// by name or by an absolute path — a relative ./x/warden is whatever binary
+// happens to be called that.
+func runsOnlyWarden(bin, seg string) bool {
+	if filepath.Base(bin) != "warden" {
+		return false
+	}
+	if bin != "warden" && !strings.HasPrefix(bin, "/") && !strings.HasPrefix(bin, "~/") {
+		return false
+	}
+	return !strings.ContainsAny(seg, "`<>") && !strings.Contains(seg, "$(")
 }
 
 // commandToken reduces a shell word to the command it invokes. A reader hidden
-// inside a substitution — export $(cat .env | xargs) — is still a reader, and
-// the substitution is exactly how someone routes around a naive matcher.
+// inside a substitution — export $(cat .env | xargs), diff <(cat .env) x — is
+// still a reader, and the substitution is exactly how someone routes around a
+// naive matcher.
 func commandToken(f string) string {
-	f = strings.TrimLeft(f, "$(`\"'\\{")
+	f = strings.TrimLeft(f, "$(`\"'\\{<>")
 	return filepath.Base(f)
 }
 
-// mentionsProtected reports whether the segment names an env file that is not
-// one of the readable ones.
-func mentionsProtected(seg string) bool {
+// mentionsProtected returns the strictest target among the env files the
+// segment names that are not one of the readable ones, or "" for none.
+func mentionsProtected(seg string) Target {
+	var target Target
 	for _, m := range envFileRe.FindAllStringSubmatch(seg, -1) {
 		if !readableNames[m[2]] {
-			return true
+			target = stricter(target, targetOf(m[2]))
 		}
 	}
-	return false
+	return target
 }

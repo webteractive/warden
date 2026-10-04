@@ -18,7 +18,7 @@ const tagValue = "env-read-guard"
 
 // Matcher is the tool set the guard is asked about. Everything else is
 // irrelevant to it and should not pay the cost of a subprocess.
-const Matcher = "Read|Edit|Write|NotebookEdit|Bash"
+const Matcher = "Read|Edit|Write|NotebookEdit|Grep|Bash|Monitor"
 
 // Entry is the PreToolUse entry warden installs.
 func Entry(command string) map[string]any {

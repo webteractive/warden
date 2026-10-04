@@ -380,7 +380,16 @@ irritation:
 
 A denial is never bare. It answers with the warden command that gets the same
 answer, since an unexplained refusal just produces three more attempts at a
-workaround.
+workaround. A denied edit also says that env files are not edited directly —
+`set`, `unset`, `clear` and `init` make every change — and a denial touching
+`.secrets` says it is never readable.
+
+The tools it judges are `Read`, `Edit`, `Write`, `NotebookEdit`, `Grep` (its
+`path`, and a `glob` that names an env file) and the shell tools `Bash` and
+`Monitor`. `warden hook --guard --json` writes the decision to stdout —
+`{"decision":"deny","target":"env"|"secrets","reason":"…"}` or
+`{"decision":"allow"}` — for a caller that words its own messages; the exit
+codes are the same either way.
 
 Installing preserves every other setting and every other hook, replaces warden's
 own entry rather than appending a second copy, and refuses a settings file it

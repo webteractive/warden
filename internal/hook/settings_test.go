@@ -134,3 +134,17 @@ func mustJSON(t *testing.T, v any) string {
 	}
 	return string(b)
 }
+
+// The matcher selects which calls reach the guard at all. A tool Decide judges
+// but the matcher leaves out is never asked about, so the two must agree.
+func TestTheMatcherCoversEveryToolTheGuardJudges(t *testing.T) {
+	tools := map[string]bool{}
+	for _, name := range strings.Split(Matcher, "|") {
+		tools[name] = true
+	}
+	for _, want := range []string{"Read", "Edit", "Write", "NotebookEdit", "Bash", "Grep", "Monitor"} {
+		if !tools[want] {
+			t.Errorf("matcher %q leaves out %s", Matcher, want)
+		}
+	}
+}
