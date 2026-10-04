@@ -3,7 +3,7 @@ import type { EngineInterface, PluginOptions, Register } from 'claude-code'
 
 import type { EnvRow, GuardStatus, Health, LeakTally, PaneAction, PaneState, Problem, Scope, Severity } from '../types'
 import {
-  degradedReason, guarded, isWardenWrite, mentionsEnvFile, parseGuardAnswer, payload,
+  degradedReason, guarded, isWardenWrite, mightNameEnvFile, parseGuardAnswer, payload,
 } from './guard'
 import type { Guarded } from './guard'
 import {
@@ -24,6 +24,9 @@ import type { Finding, Redaction } from './shapes'
 // into functions declared beside the hooks that use it.
 
 const PANE = 'warden-env'
+
+// The doors whose rows the tripwire scans; see the session.append hook.
+const SCANNED_DOORS = new Set(['tool-result', 'tool-message', 'attachment', 'delivery', 'hook-context'])
 
 const INITIAL_GUARD: GuardStatus = { mode: 'unknown', canPrompt: false, denies: { env: 0, secrets: 0 } }
 const INITIAL_PANE: PaneState = { scope: 'project', rows: null, selected: null, pending: null, why: null }
@@ -156,36 +159,22 @@ async function countDeny($: EngineInterface, target: 'env' | 'secrets'): Promise
   await update($, guardState, s => ({ ...s, denies: { ...s.denies, [target]: s.denies[target] + 1 } }))
 }
 
-// Returns the denial for a guarded call, or undefined to let it run.
+// Returns the denial for a guarded call, or undefined to let it run. Every
+// guarded call is put to warden as written, including the symlink check, which
+// warden makes itself so the settings hook makes it too.
 async function judge($: EngineInterface, g: Guarded): Promise<string | undefined> {
-  // `ln -s .env notes.txt` then `Read notes.txt`: warden judges spellings, so
-  // the resolved path is asked about as well.
-  let real: string | undefined
-  if (g.path !== undefined) {
-    try {
-      const stat = await $.fs.stat(g.path, { resolve: true })
-      if (stat.realPath !== undefined && stat.realPath !== g.path) real = stat.realPath
-    } catch {
-      real = undefined
-    }
-  }
-  if (!mentionsEnvFile([...Object.values(g.input), real])) return undefined
-
   const status = await ensureProbe($)
   if (status.mode !== 'warden') {
-    await countDeny($, /\.secrets/.test(JSON.stringify(g.input) + (real ?? '')) ? 'secrets' : 'env')
+    if (!mightNameEnvFile(Object.values(g.input))) return undefined
+    await countDeny($, /secrets/i.test(JSON.stringify(g.input)) ? 'secrets' : 'env')
     return degradedReason(status.reason ?? 'warden unavailable')
   }
-  for (const body of real === undefined ? [payload(g)] : [payload(g), payload(g, real)]) {
-    const ran = await run($, ['hook', '--guard', '--json'], { stdin: body })
-    const answer = parseGuardAnswer(ran.exitCode, ran.stdout)
-    if (answer === undefined) return degradedReason('the guard gave no answer')
-    if (answer.decision === 'deny') {
-      await countDeny($, answer.target ?? 'env')
-      return answer.reason
-    }
-  }
-  return undefined
+  const ran = await run($, ['hook', '--guard', '--json'], { stdin: payload(g) })
+  const answer = parseGuardAnswer(ran.exitCode, ran.stdout)
+  if (answer === undefined) return degradedReason('the guard gave no answer')
+  if (answer.decision === 'allow') return undefined
+  await countDeny($, answer.target ?? 'env')
+  return answer.reason
 }
 
 type Block = { type: string; [field: string]: unknown }
@@ -328,7 +317,9 @@ async function write($: EngineInterface, key: string, action: PaneAction): Promi
   if (state.pending !== null) return
   await update($, pane, s => ({ ...s, pending: { key, action } }))
   try {
-    const args = ['set', '--secret', key, ...(action === 'generate' ? ['--generate'] : []), ...scopeArgs(state.scope)]
+    // The key comes from the file, and a hand-edited file can hold one that
+    // reads as a flag; after -- warden takes it as the key it is.
+    const args = ['set', '--secret', ...(action === 'generate' ? ['--generate'] : []), ...scopeArgs(state.scope), '--', key]
     const ran = await run($, args, { timeoutMs: PROMPT_TIMEOUT_MS, cwd: await $.session.cwd() })
     const said = ran.exitCode === 0
       ? firstLine(ran.stdout, `ok: ${key}`)
@@ -344,7 +335,7 @@ async function write($: EngineInterface, key: string, action: PaneAction): Promi
 
 async function why($: EngineInterface, key: string): Promise<void> {
   const state = await read($, pane)
-  const ran = await run($, ['classify', key, '--json', ...scopeArgs(state.scope)], { cwd: await $.session.cwd() })
+  const ran = await run($, ['classify', '--json', ...scopeArgs(state.scope), '--', key], { cwd: await $.session.cwd() })
   let rule = 'unknown'
   try {
     const parsed = JSON.parse(ran.stdout) as { rule?: unknown }
@@ -383,11 +374,15 @@ export const register: Register = (on, options) => {
 
   // MARK: - Tripwire
 
-  // One unmatched hook: the rows a tool produces are the ones scanned, in the
-  // main conversation and every subagent's alike. Rewriting here is before the
-  // row is stored and before the next request carries it.
+  // One unmatched hook over every row the model reads that something other
+  // than the person wrote: tool results, the rows a tool hands over, Monitor
+  // events and task notifications (attachments), deliveries from other agents,
+  // and a settings hook's context — in the main conversation and every
+  // subagent's alike. The person's own prompt is left as they sent it.
+  // Rewriting here is before the row is stored and before the next request
+  // carries it.
   on('session.append', async ($, e, next) => {
-    if (e.door !== 'tool-result' && e.door !== 'tool-message') return next(e)
+    if (!SCANNED_DOORS.has(e.door)) return next(e)
     const scanned = scanRow(e.message.content as Block[])
     if (scanned === undefined) return next(e)
     const tool = e.origin.kind === 'tool' ? e.origin.tool : 'tool'

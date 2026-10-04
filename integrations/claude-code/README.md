@@ -6,8 +6,8 @@ a value: warden decides and holds the values, and this mod asks it.
 
 | Feature | What it does |
 |---|---|
-| Guard | Denies `Read`, `Edit`, `Write`, `NotebookEdit`, `Grep`, `Bash` and `Monitor` calls that would read `.env*` or `.secrets`, for the main loop and subagents alike. The decision and the denial text are `warden hook --guard --json`'s, so the mod and the settings hook never disagree. A symlink is judged by where it lands. |
-| Tripwire | Scans every tool result for credential shapes (warden's rules, unanchored). High-confidence live credentials are removed before the row is stored or sent; everything found is named to the model and to you, by rule — never by value. |
+| Guard | Denies `Read`, `Edit`, `Write`, `NotebookEdit`, `LSP`, `Grep`, `Bash` and `Monitor` calls that would read `.env*` or `.secrets`, for the main loop and subagents alike. Every such call is put to `warden hook --guard --json` as written, so the mod and the settings hook never disagree about how `.e""nv`, `.ENV` or a symlink should be read. |
+| Tripwire | Scans every row the model reads that you did not type — tool results, Monitor events and task notifications, other agents' messages, settings-hook context — for credential shapes (warden's rules, unanchored; every rule linear, so megabytes of output scan in milliseconds). High-confidence live credentials are removed before the row is stored or sent; everything found is named to the model and to you, by rule — never by value. |
 | Health band | Runs `warden doctor --json` for the project and `~/.secrets` at start, on a directory change, after a warden write and at most once a minute after turns. Shows warn-or-worse above the prompt, beneath nothing: other plugins' bands stay below it. **Hide** holds for the session until the findings change. **Ask Claude to fix** fills the prompt without sending it. |
 | `/env` | A pane of key names, class, set/unset and doctor badges. **Set…** and **Generate** run `warden set --secret KEY` (`--generate`), which opens warden's own macOS dialog; the value goes from your keyboard to the file and never through the session. `/env global` for `~/.secrets`, `/env refresh` to re-probe. |
 
@@ -19,8 +19,10 @@ guard; the tripwire catches what it can recognise in their output.
 
 warden with `hook --guard --json` and JSON errors (the build in this checkout).
 The mod probes at session start; with no warden, or one too old, the guard runs
-**degraded**: any call that names `.env` or `.secrets` is denied until warden is
-reinstalled, and everything else runs untouched.
+**degraded**: any call that might spell an env file — `env` or `secrets` in any
+case, `$'…'` quoting, or a dotfile word with a wildcard, brace, quote or
+backslash — is denied until warden is reinstalled, and everything else runs
+untouched.
 
 Set… and Generate need macOS (warden's dialog is `osascript`) and a surface on
 this Mac; elsewhere the pane shows the command to run instead.

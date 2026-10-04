@@ -108,3 +108,21 @@ test('rows that are not tool output are left alone', async ($, on) => {
   expect(JSON.stringify(seen.stored.at(-1))).toContain(LIVE)
   expect(seen.toasts).toEqual([])
 })
+
+// Tool results are not the only rows the model reads: Monitor events and
+// background-task notifications arrive as attachments or deliveries, and a
+// settings hook's context as its own row. Only the person's own prompt is left
+// alone, because they chose to send it.
+for (const door of ['attachment', 'delivery', 'hook-context'] as const) {
+  test(`a live key in a ${door} row is redacted`, async ($, on) => {
+    const seen = world(on)
+    await start($)
+    await $.session.append({
+      message: { type: 'user', role: 'user', isMeta: true, content: [{ type: 'text', text: `event: ${LIVE}` }] },
+      door,
+      origin: { kind: 'engine' },
+      uuid: `row-${door}`,
+    } as Parameters<typeof $.session.append>[0]).catch(() => undefined)
+    expect(JSON.stringify(seen.stored.at(-1))).not.toContain(LIVE)
+  })
+}

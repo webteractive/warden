@@ -77,10 +77,10 @@ function answer(w: FakeWarden, argv: readonly string[], stdin?: string): { exitC
       if (w.doctor[scope] === 'no-env-file') return noFile
       return ok(`${JSON.stringify(w.list[scope])}\n`)
     case 'classify':
-      return ok(`${JSON.stringify({ key: rest[0], class: 'secret', rule: 'name:*SECRET*' })}\n`)
+      return ok(`${JSON.stringify({ key: rest.at(-1), class: 'secret', rule: 'name:*SECRET*' })}\n`)
     case 'set':
       return w.setExit === 0
-        ? ok(`ok: ${rest[1]} set (secret) in .env\n`)
+        ? ok(`ok: ${rest.at(-1)} set (secret) in .env\n`)
         : { exitCode: w.setExit, stdout: '', stderr: 'warden: cancelled\n' }
     default:
       return { exitCode: 3, stdout: '', stderr: 'unknown command\n' }
@@ -89,8 +89,6 @@ function answer(w: FakeWarden, argv: readonly string[], stdin?: string): { exitC
 
 export type WorldOptions = {
   warden?: FakeWarden
-  // path → where it resolves, for the symlink check; absent paths resolve to themselves.
-  links?: Record<string, string>
   files?: string[]
   panes?: string[]
 }
@@ -134,12 +132,11 @@ export function world(on: On, options: WorldOptions = {}): Seen {
     return { isFilled: true }
   })
   on('fs.stat', (_$, e) => {
-    const target = options.links?.[e.path] ?? e.path
-    const isFile = options.files?.includes(target) ?? true
+    const isFile = options.files?.includes(e.path) ?? true
     if (!isFile) throw new Error('ENOENT')
     const stat: FsStat = {
-      kind: 'file', size: 1, mtimeMs: 0, isLink: target !== e.path,
-      ...(e.resolve ? { realPath: target } : {}),
+      kind: 'file', size: 1, mtimeMs: 0, isLink: false,
+      ...(e.resolve ? { realPath: e.path } : {}),
     }
     return { value: stat }
   })

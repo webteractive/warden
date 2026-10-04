@@ -1,21 +1,21 @@
-// The guard's pure half: which fields of a tool call can name a file, the cheap
-// test that decides whether warden is asked at all, and reading warden's answer.
-// The decision itself is warden's (`warden hook --guard --json`); nothing here
-// decides allow or deny, so the mod and the settings hook cannot disagree.
+// The guard's pure half: which fields of a tool call can name a file, and
+// reading warden's answer. The decision is warden's (`warden hook --guard
+// --json`), and every guarded call is put to it as written: whether .e""nv,
+// .ENV or `f=.env; cat $f` names an env file is a question about how the shell
+// spells things, and a check here that answered it differently would be a way
+// around the guard. Nothing here decides allow or deny while warden can run.
 //
 // Pure: nothing here touches `$`.
 
-// What a guarded call hands warden: the tool's fields that matter, and the path
-// a symlink check resolves, when the tool takes one.
+// What a guarded call hands warden: the tool and the fields of it that matter.
 export type Guarded = {
   tool: string
   input: Record<string, string>
-  pathField?: string
-  path?: string
 }
 
 // The field each path-taking tool names its file in.
 const PATH_FIELDS: Readonly<Record<string, string>> = {
+  LSP: 'filePath',
   Read: 'file_path',
   Edit: 'file_path',
   Write: 'file_path',
@@ -46,23 +46,27 @@ export function guarded(tool: string, e: Readonly<Record<string, unknown>>): Gua
   const glob = tool === 'Grep' ? str(e.glob) : undefined
   if (glob !== undefined) input.glob = glob
   if (Object.keys(input).length === 0) return undefined
-  return { tool, input, pathField, path }
+  return { tool, input }
 }
 
-// Every call warden would deny contains one of these literally, so a call that
-// contains neither is allowed without starting a process. That is most calls.
-const MENTION = /\.env|\.secrets/
+// Whether a call might spell an env file, for use only while warden cannot be
+// run. Deliberately broad — any env or secrets in any case, ANSI-C quoting, and
+// a dotfile word carrying a wildcard, brace, quote or backslash — because the
+// alternative to holding a call here is letting it through unjudged. A name
+// computed at run time still passes; so it does with warden, too.
+const MIGHT_NAME = [
+  /env|secrets/i,
+  /\$'/,
+  /(^|[\s/'"=@<(])[.[?][^\s/]*[*?[{"'\\]/,
+]
 
-export function mentionsEnvFile(texts: readonly (string | undefined)[]): boolean {
-  return texts.some(t => t !== undefined && MENTION.test(t))
+export function mightNameEnvFile(texts: readonly (string | undefined)[]): boolean {
+  return texts.some(t => t !== undefined && MIGHT_NAME.some(re => re.test(t)))
 }
 
-// The payload `warden hook --guard` reads on stdin, with `path` standing in for
-// the tool's own when a symlink resolved somewhere else.
-export function payload(g: Guarded, path?: string): string {
-  const input = { ...g.input }
-  if (path !== undefined && g.pathField !== undefined) input[g.pathField] = path
-  return JSON.stringify({ tool_name: g.tool, tool_input: input })
+// The payload `warden hook --guard` reads on stdin.
+export function payload(g: Guarded): string {
+  return JSON.stringify({ tool_name: g.tool, tool_input: g.input })
 }
 
 export type GuardAnswer = {

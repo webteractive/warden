@@ -36,12 +36,21 @@ test('a read of .env is denied with warden\'s own reason, and the tool never run
   expect(JSON.parse(guardRuns(seen).at(-1)?.stdin ?? '')).toEqual({ tool_name: 'Bash', tool_input: { command: 'cat .env' } })
 })
 
-test('a call that names no env file runs without asking warden', async ($, on) => {
-  const { seen, ran } = await setup($, on)
-  const result = await $.tool.call({ tool: 'Bash', command: 'ls -la' })
-  expect(result.deny).toBe(undefined)
-  expect(ran).toEqual(['Bash'])
-  expect(guardRuns(seen)).toEqual([])
+// The mod has no opinion of its own on a shell command: whether `.e""nv` or
+// `.ENV` names an env file is a question about how the shell spells it, and
+// only warden answers it, so every guarded call is put to warden verbatim.
+for (const command of ['ls -la', 'cat .e""nv', 'cat .ENV', 'f=.env; cat $f', 'cat .e*v']) {
+  test(`\`${command}\` is put to warden as written`, async ($, on) => {
+    const { seen } = await setup($, on)
+    await $.tool.call({ tool: 'Bash', command })
+    expect(JSON.parse(guardRuns(seen).at(-1)?.stdin ?? '{}')).toEqual({ tool_name: 'Bash', tool_input: { command } })
+  })
+}
+
+test('a Read is put to warden whatever its case', async ($, on) => {
+  const { seen } = await setup($, on)
+  await $.tool.call({ tool: 'Read', file_path: '/work/app/.ENV' })
+  expect(JSON.parse(guardRuns(seen).at(-1)?.stdin ?? '{}').tool_input).toEqual({ file_path: '/work/app/.ENV' })
 })
 
 test('the example file is asked about and allowed', async ($, on) => {
@@ -49,16 +58,6 @@ test('the example file is asked about and allowed', async ($, on) => {
   const result = await $.tool.call({ tool: 'Read', file_path: '/work/app/.env.example' })
   expect(result.deny).toBe(undefined)
   expect(ran).toEqual(['Read'])
-})
-
-test('a symlink to .env is denied by where it lands', async ($, on) => {
-  const { seen, ran } = await setup($, on, { links: { '/work/app/notes.txt': '/work/app/.env' } })
-  const result = await $.tool.call({ tool: 'Read', file_path: '/work/app/notes.txt' })
-  expect(result.deny).toContain('Denied')
-  expect(ran).toEqual([])
-  expect(guardRuns(seen).map(r => JSON.parse(r.stdin ?? '').tool_input.file_path)).toEqual([
-    '/work/app/notes.txt', '/work/app/.env',
-  ])
 })
 
 test('~/.secrets is denied, and its target reaches warden\'s answer', async ($, on) => {
@@ -79,6 +78,9 @@ test('with no warden, calls naming an env file are held and the rest run untouch
   const { seen, ran } = await setup($, on, { warden: fakeWarden({ installed: false }) })
   const denied = await $.tool.call({ tool: 'Bash', command: 'cat .env' })
   expect(denied.deny).toContain('warden is not runnable here')
+  for (const spelled of ['cat .ENV', 'cat .e""nv', 'cat .e*v']) {
+    expect((await $.tool.call({ tool: 'Bash', command: spelled })).deny).toContain('warden is not runnable here')
+  }
   const fine = await $.tool.call({ tool: 'Bash', command: 'ls' })
   expect(fine.deny).toBe(undefined)
   expect(ran).toEqual(['Bash'])

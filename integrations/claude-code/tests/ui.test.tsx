@@ -132,7 +132,7 @@ for (const surface of SURFACES) {
     await ui.press({ key: 'set' })
 
     const set = seen.runs.find(r => r.argv[1] === 'set')
-    expect(set?.argv).toEqual(['warden', 'set', '--secret', 'STRIPE_SECRET'])
+    expect(set?.argv).toEqual(['warden', 'set', '--secret', '--', 'STRIPE_SECRET'])
     expect(set?.stdin).toBe(undefined)
     expect(set?.timeoutMs ?? 0).toBeGreaterThanOrEqual(150_000)
     expect(seen.toasts).toContain('ok: STRIPE_SECRET set (secret) in .env')
@@ -145,7 +145,7 @@ for (const surface of SURFACES) {
     await runEnv($, 'global')
     const ui = await $.ui.mount({ plugin: 'warden', surface, component: 'Pane', requestId: 'warden-env', props: PANE_PROPS })
     await ui.press({ key: 'generate' })
-    expect(seen.runs.find(r => r.argv[1] === 'set')?.argv).toEqual(['warden', 'set', '--secret', 'GH_TOKEN', '--generate', '--global'])
+    expect(seen.runs.find(r => r.argv[1] === 'set')?.argv).toEqual(['warden', 'set', '--secret', '--generate', '--global', '--', 'GH_TOKEN'])
     await ui.unmount()
   })
 
@@ -202,5 +202,19 @@ test('the pane footer counts denials and redactions', async ($, on) => {
   await runEnv($, '')
   const ui = await $.ui.mount({ plugin: 'warden', surface: 'terminal', component: 'Pane', requestId: 'warden-env', props: PANE_PROPS })
   expect(await ui.find({ type: 'Text', text: /1 denied/ })).toBeDefined()
+  await ui.unmount()
+})
+
+// A key name comes from the file, and a hand-edited file can hold one that
+// reads as a flag. After --, warden takes it as the key it is.
+test('a key named like a flag is passed as a key', async ($, on) => {
+  const w = fakeWarden({ list: { project: [{ key: '--global', class: 'secret', set: false }], global: [] } })
+  const seen = await begin($, on, { warden: w })
+  await runEnv($, '')
+  const ui = await $.ui.mount({ plugin: 'warden', surface: 'terminal', component: 'Pane', requestId: 'warden-env', props: PANE_PROPS })
+  await ui.press({ key: 'set' })
+  await ui.press({ key: 'why' })
+  expect(seen.runs.find(r => r.argv[1] === 'set')?.argv).toEqual(['warden', 'set', '--secret', '--', '--global'])
+  expect(seen.runs.find(r => r.argv[1] === 'classify')?.argv).toEqual(['warden', 'classify', '--json', '--', '--global'])
   await ui.unmount()
 })

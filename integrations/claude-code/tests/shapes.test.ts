@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { degradedReason, guarded, isWardenWrite, mentionsEnvFile, parseGuardAnswer, payload } from '../hooks/guard'
+import { degradedReason, guarded, isWardenWrite, mightNameEnvFile, parseGuardAnswer, payload } from '../hooks/guard'
 import { bandRow, fingerprint, FIX_PROMPT, shownProblems, withFlags } from '../hooks/health'
 import { marker, modelNote, personNote, redact } from '../hooks/shapes'
 import { PROBLEMS } from './world'
@@ -105,26 +105,28 @@ test('nothing the mod says claims to be security', () => {
 })
 
 test('the guard picks each tool\'s own fields, and nothing for tools it has no opinion on', () => {
-  expect(guarded('Read', { file_path: '/p/.env', offset: 3 })).toEqual({
-    tool: 'Read', input: { file_path: '/p/.env' }, pathField: 'file_path', path: '/p/.env',
-  })
+  expect(guarded('Read', { file_path: '/p/.env', offset: 3 })).toEqual({ tool: 'Read', input: { file_path: '/p/.env' } })
   expect(guarded('NotebookEdit', { notebook_path: '/p/n.ipynb', new_source: 'x' })?.input).toEqual({ notebook_path: '/p/n.ipynb' })
   expect(guarded('Grep', { pattern: 'X', glob: '.env*' })?.input).toEqual({ glob: '.env*' })
   expect(guarded('Monitor', { command: 'tail -f .env', timeout_ms: 1 })?.input).toEqual({ command: 'tail -f .env' })
+  expect(guarded('LSP', { operation: 'hover', filePath: '/p/.env', line: 1, character: 1 })?.input).toEqual({ filePath: '/p/.env' })
   expect(guarded('WebFetch', { url: 'https://example.com/.env' })).toBe(undefined)
   expect(guarded('Grep', { pattern: '.env' })).toBe(undefined)
 })
 
-test('only calls naming an env file reach warden', () => {
-  expect(mentionsEnvFile(['cat .env.local'])).toBe(true)
-  expect(mentionsEnvFile(['/Users/me/.secrets'])).toBe(true)
-  expect(mentionsEnvFile(['ls -la', undefined])).toBe(false)
+test('with warden unavailable, anything that might spell an env file is held', () => {
+  for (const held of ['cat .env.local', 'cat .ENV', '/Users/me/.SECRETS', 'cat .e""nv', 'cat .\\env', "cat $'\\x2eenv'", 'cat .e*v', 'cat [.]env', 'cat .{e,x}nv']) {
+    expect(mightNameEnvFile([held])).toBe(true)
+  }
+  for (const fine of ['ls -la', 'git status', 'npm test', 'cat README.md', undefined]) {
+    expect(mightNameEnvFile([fine])).toBe(false)
+  }
 })
 
-test('a symlink\'s target replaces the path in the payload', () => {
-  const g = guarded('Read', { file_path: '/p/notes.txt' })
+test('the payload is the tool and its fields, as written', () => {
+  const g = guarded('Read', { file_path: '/p/.ENV', limit: 3 })
   if (g === undefined) throw new Error('expected a guarded call')
-  expect(JSON.parse(payload(g, '/p/.env'))).toEqual({ tool_name: 'Read', tool_input: { file_path: '/p/.env' } })
+  expect(JSON.parse(payload(g))).toEqual({ tool_name: 'Read', tool_input: { file_path: '/p/.ENV' } })
 })
 
 test('a guard answer is trusted only when exit code and JSON agree', () => {
@@ -165,4 +167,43 @@ test('a band row fits the columns it is given', () => {
 test('rows carry the warn-level codes that name their key', () => {
   const rows = withFlags([{ key: 'STRIPE_SECRET', class: 'secret', set: false, flags: [] }, { key: 'TLS_KEY', class: 'secret', set: true, flags: [] }], PROBLEMS)
   expect(rows.map(r => r.flags)).toEqual([['drift'], []])
+})
+
+// Each of these spells a live value so that an anchored or word-bounded rule
+// misses it, or leaves part of it behind.
+test('a value is found however the text around it is escaped', () => {
+  for (const [text, value] of [
+    [`{"out":"line one\\n${LIVE}\\n"}`, LIVE],
+    [`https://api.example.com/?key%3D${LIVE}`, LIVE],
+    [`AWS:\\t${AWS}`, AWS],
+    [`token=${GHP}_suffix`, GHP],
+  ] as const) {
+    const out = redact(text, 'live')
+    expect(out.text).not.toContain(value)
+    expect(out.redacted.length).toBe(1)
+  }
+})
+
+test('every occurrence is removed, not just the first', () => {
+  const out = redact(`${LIVE} and again ${LIVE}`, 'live')
+  expect(out.text).toBe(`${marker('shape:stripe-live')} and again ${marker('shape:stripe-live')}`)
+})
+
+test('a password containing @ goes whole', () => {
+  const out = redact('postgres://admin:p@ss@word@db.example.com/app', 'live')
+  expect(out.text).toBe(`postgres://admin:${marker('shape:url-userinfo')}@db.example.com/app`)
+})
+
+test('PGP and encrypted PEM keys lose their bodies, not just their headers', () => {
+  const pgp = ['-----BEGIN PGP PRIVATE KEY BLOCK-----', '', 'lQOYBGVsecretBODYxyz', '=AbCd', '-----END PGP PRIVATE KEY BLOCK-----'].join('\n')
+  expect(redact(pgp, 'live').text).toBe(marker('shape:pem-block'))
+  const encrypted = ['-----BEGIN RSA PRIVATE KEY-----', 'Proc-Type: 4,ENCRYPTED', 'DEK-Info: AES-128-CBC,0123456789ABCDEF', '', 'MIIEowIBAAKCAQEAsecretBODY'].join('\n')
+  const out = redact(encrypted, 'live').text
+  expect(out).not.toContain('secretBODY')
+  expect(out).not.toContain('Proc-Type')
+})
+
+test('nothing past the first megabytes is let through', () => {
+  const out = redact(`${'x'.repeat(5 * 1024 * 1024)} ${LIVE}`, 'live')
+  expect(out.text.endsWith(marker('shape:stripe-live'))).toBe(true)
 })

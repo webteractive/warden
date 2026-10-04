@@ -756,6 +756,51 @@ Deviations from the design above, each forced by the engine or the decisions:
   same. The exemption now needs warden by name or absolute path and a segment
   with no substitution or redirect, a backtick bounds an env file name, and
   `<(` is stripped from a reader token, so `diff <(cat .env) x` is a read.
+- **The mod no longer filters what it asks warden** (mod 0.1.3, after a
+  post-commit review). Its prefilter, a literal `/\.env|\.secrets/`, saw a
+  different string than the shell runs: `.e""nv`, `.\env`, `$'\x2eenv'`,
+  `.e*v` and `.ENV` (which a case-insensitive APFS volume opens as `.env`) all
+  skipped warden entirely. Every guarded call now goes to warden as written,
+  one process per call as the settings hook already costs, and the symlink
+  check moved into warden (`filepath.EvalSymlinks`) so the settings hook makes
+  it too. Without warden, a deliberately broad heuristic holds anything that
+  might spell an env file.
+- **warden judges the shell's spelling, not the typed one.** `normalizeShell`
+  decodes `$'…'`, substitutes variables assigned in the same command (including
+  `for` lists), and drops quotes and backslashes; names compare without case;
+  braces expand; a wildcard word that starts where a dotfile does counts as
+  naming every protected file it can match; Grep globs like `.e*` and `.*`
+  count; `LSP` is a read tool; and `ln`, `diff`, `sort`, `base64`, `curl` and
+  their kind joined the readers. What stays open, by decision: a name computed
+  at run time (substitution output, `eval`, a value read from a file or a
+  script). Closing it would mean denying every reader whose arguments are
+  computed, which catches `cat $(git rev-parse --show-toplevel)/README.md` and
+  still misses `eval` and scripts — the tripwire is the backstop there.
+- **Redaction closed four under-matches** (same review). Prefix rules required
+  a non-word character before the value, so `\nsk_live_…` in JSON-escaped
+  output and `%3Dsk_live_…` in a URL were missed; they now stand alone, as
+  each prefix is distinctive. A URL password containing `@` lost only its
+  first part; it now runs to the last `@`. PGP `PRIVATE KEY BLOCK`s were
+  missed, and an encrypted PEM cut off before its END kept its body past the
+  `Proc-Type:` header. Output past 4 MiB was not scanned at all. Case variants
+  and base64-wrapped values stay out of reach, as they are for warden's own
+  rules.
+- **Every shape rule is linear** (mod 0.1.4, second review). The URL rule tried
+  an unbounded scheme from every dot, the PEM rule searched lazily to the end
+  of the text for an END after every BEGIN, and the JWT rule restarted inside
+  runs of `eyJ`; a megabyte of hostile output stalled the scan for 55 to 317
+  seconds inside the session. URL parts are bounded, PEM is found by indexing
+  END markers once and pairing each BEGIN with the next END of its label within
+  64 KiB, and a JWT starts only at a token boundary or after a JSON escape. A
+  test holds fifteen 1 MB adversarial inputs under 500 ms each. No cap on the
+  scanned length was needed once every rule is linear, so nothing is skipped.
+- **The tripwire scans every row the model reads that the person did not
+  type**: attachments (Monitor events, task notifications), deliveries and
+  settings-hook context as well as tool rows. Only the prompt is left alone.
+- **Pane keys follow `--`**, so a hand-edited `.env` key spelled like a flag
+  reaches warden as a key. warden's brace expansion stops at 256 words and
+  treats a word cut off there as naming an env file, so one crafted command
+  cannot hang the guard.
 - **The deny counter is per target in state**, and the pane footer shows it
   with the tripwire's counts; nothing about either reaches the model.
 
