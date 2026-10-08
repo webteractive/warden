@@ -149,9 +149,9 @@ test('warden writes are told apart from reads', () => {
 test('the band shows warn and worse, errors first, and a fingerprint names findings, not values', () => {
   const health = { project: PROBLEMS, global: [PROBLEMS[1]!], noEnvButExample: false, checkedAt: 0 }
   const shown = shownProblems(health, 'warn')
-  expect(shown.map(p => `${p.scope}:${p.code}`)).toEqual(['project:perms', 'project:drift', 'global:drift'])
+  expect(shown.map(p => `${p.scope}:${p.code}`)).toEqual(['project:perms', 'project:exposed', 'global:exposed'])
   expect(shownProblems(health, 'error').length).toBe(1)
-  expect(fingerprint(shown)).toBe('global:drift:STRIPE_SECRET|project:drift:STRIPE_SECRET|project:perms:')
+  expect(fingerprint(shown)).toBe('global:exposed:API_TOKEN|project:exposed:API_TOKEN|project:perms:')
   expect(fingerprint([...shown].reverse())).toBe(fingerprint(shown))
   expect(shownProblems({ project: null, global: null, noEnvButExample: true, checkedAt: 0 }, 'warn')[0]?.code).toBe('no-env')
 })
@@ -164,9 +164,24 @@ test('a band row fits the columns it is given', () => {
   }
 })
 
+// .env.example ships blanks, so a key left empty in or out of a project's .env
+// is meant. ~/.secrets holds only credentials, so an empty one is a finding.
+test('a key left empty in, or out of, .env is no band problem; one left empty in ~/.secrets is', () => {
+  const empty = { code: 'empty', key: 'MAIL_PASSWORD', severity: 'warn' as const, message: 'MAIL_PASSWORD is declared but empty' }
+  const health = { project: [empty, PROBLEMS[2]!], global: [empty], noEnvButExample: false, checkedAt: 0 }
+  expect(shownProblems(health, 'warn').map(p => `${p.scope}:${p.code}`)).toEqual(['global:empty'])
+})
+
 test('rows carry the warn-level codes that name their key', () => {
-  const rows = withFlags([{ key: 'STRIPE_SECRET', class: 'secret', set: false, flags: [] }, { key: 'TLS_KEY', class: 'secret', set: true, flags: [] }], PROBLEMS)
+  const rows = withFlags([{ key: 'STRIPE_SECRET', class: 'secret', set: false, flags: [] }, { key: 'TLS_KEY', class: 'secret', set: true, flags: [] }], PROBLEMS, 'project')
   expect(rows.map(r => r.flags)).toEqual([['drift'], []])
+})
+
+test('an empty row is badged in ~/.secrets and not in .env', () => {
+  const row = { key: 'MAIL_PASSWORD', class: 'secret' as const, set: false, flags: [] }
+  const empty = { code: 'empty', key: 'MAIL_PASSWORD', severity: 'warn' as const, message: 'MAIL_PASSWORD is declared but empty' }
+  expect(withFlags([row], [empty], 'project')[0]?.flags).toEqual([])
+  expect(withFlags([row], [empty], 'global')[0]?.flags).toEqual(['empty'])
 })
 
 // Each of these spells a live value so that an anchored or word-bounded rule

@@ -297,7 +297,7 @@ async function loadPane($: EngineInterface, scope?: Scope): Promise<void> {
   await update($, pane, s => ({
     ...s,
     scope: target,
-    rows: rows === undefined ? null : withFlags(rows, problems.problems ?? []),
+    rows: rows === undefined ? null : withFlags(rows, problems.problems ?? [], target),
     selected: s.scope === target && rows?.some(r => r.key === s.selected) ? s.selected : rows?.[0]?.key ?? null,
     why: s.scope === target ? s.why : null,
     ...(error === undefined ? { error: undefined } : { error }),

@@ -167,6 +167,7 @@ export function guardRuns(seen: Seen): Seen['runs'] {
 
 export const PROBLEMS: Problem[] = [
   { code: 'perms', severity: 'error', message: '/work/app/.env has permissions 0644 — group or world readable', fix: 'chmod 600 /work/app/.env' },
+  { code: 'exposed', key: 'API_TOKEN', severity: 'warn', message: 'API_TOKEN was written from a command line, so its value reached shell history and argv', fix: 'rotate it at the provider, then: warden set --secret API_TOKEN --generate' },
   { code: 'drift', key: 'STRIPE_SECRET', severity: 'warn', message: 'STRIPE_SECRET is declared in .env.example but not set', fix: 'warden set --secret STRIPE_SECRET' },
   { code: 'multiline', key: 'TLS_KEY', severity: 'info', message: 'TLS_KEY holds a multi-line value (16 lines), stored escaped on one line' },
 ]

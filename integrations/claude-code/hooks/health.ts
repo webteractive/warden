@@ -64,6 +64,18 @@ export function errorCode(stderr: string): string | undefined {
   return typeof code === 'string' ? code : undefined
 }
 
+// A key left empty in a project's .env, or left out of it, is taken as meant:
+// .env.example ships blanks, and an app reads a missing or empty value as
+// "off". ~/.secrets holds only credentials something reaches for, so an empty
+// key there still shows.
+function isMeantEmpty(scope: Scope, p: Problem): boolean {
+  return scope === 'project' && p.code === 'empty'
+}
+
+function isMeantUnset(scope: Scope, p: Problem): boolean {
+  return isMeantEmpty(scope, p) || (scope === 'project' && p.code === 'drift')
+}
+
 // The problems the band shows, errors before warnings, the project before
 // ~/.secrets within a severity. `info` never shows: multi-line values and a
 // missing .env.example are worth knowing, not worth a band.
@@ -79,7 +91,7 @@ export function shownProblems(health: Health | null, level: Severity): Shown[] {
   }
   for (const [scope, problems] of [['project', health.project], ['global', health.global]] as const) {
     for (const p of problems ?? []) {
-      if (SEVERITY_RANK[p.severity] >= floor) shown.push({ ...p, scope })
+      if (SEVERITY_RANK[p.severity] >= floor && !isMeantUnset(scope, p)) shown.push({ ...p, scope })
     }
   }
   return shown.sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity])
@@ -121,11 +133,13 @@ export function bandRow(p: Shown, columns: number): { label: string; message: st
   return { label, message, fix }
 }
 
-// Marks each row with the doctor codes that name its key.
-export function withFlags(rows: readonly EnvRow[], problems: readonly Problem[]): EnvRow[] {
+// Marks each row with the doctor codes that name its key. A project row left
+// empty says `unset` and carries no badge for it.
+export function withFlags(rows: readonly EnvRow[], problems: readonly Problem[], scope: Scope): EnvRow[] {
+  const badged = problems.filter(p => p.severity !== 'info' && !isMeantEmpty(scope, p))
   return rows.map(row => ({
     ...row,
-    flags: [...new Set(problems.filter(p => p.key === row.key && p.severity !== 'info').map(p => p.code))],
+    flags: [...new Set(badged.filter(p => p.key === row.key).map(p => p.code))],
   }))
 }
 
@@ -148,5 +162,6 @@ export function scopeArgs(scope: Scope): string[] {
 export const FIX_PROMPT =
   'warden doctor reports problems with this project\'s env. Run `warden doctor` and ' +
   '`warden doctor --global`, then fix what they report using warden commands only — ' +
-  'never read .env or ~/.secrets. For a secret I have to type, run `warden set --secret KEY` ' +
-  'and I will fill in the dialog.'
+  'never read .env or ~/.secrets. Leave a key that is empty in .env, or declared in ' +
+  '.env.example and absent from .env, as it is; that is meant. For a secret I have to type, ' +
+  'run `warden set --secret KEY` and I will fill in the dialog.'

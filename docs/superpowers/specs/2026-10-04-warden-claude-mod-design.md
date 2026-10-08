@@ -785,11 +785,14 @@ Deviations from the design above, each forced by the engine or the decisions:
   `Proc-Type:` header. Output past 4 MiB was not scanned at all. Case variants
   and base64-wrapped values stay out of reach, as they are for warden's own
   rules.
-- **Every shape rule is linear** (mod 0.1.4, second review). The URL rule tried
-  an unbounded scheme from every dot, the PEM rule searched lazily to the end
-  of the text for an END after every BEGIN, and the JWT rule restarted inside
-  runs of `eyJ`; a megabyte of hostile output stalled the scan for 55 to 317
-  seconds inside the session. URL parts are bounded, PEM is found by indexing
+- **Every shape rule is linear by construction** (mod 0.1.4, second review).
+  The URL rule tried an unbounded scheme from every dot and the PEM rule
+  searched lazily to the end of the text for an END after every BEGIN. In
+  4df856c both stayed fast only because the regex engine looks for a required
+  literal first; the redaction fixes above (no JWT boundary, PGP's `( BLOCK)?`
+  backreference, the greedy `@` password) defeated that, and that version took
+  3 s for 128 KB of `a.a.a.` and 6 s for 512 KB of fenced BEGIN lines,
+  quadrupling with each doubling, in the mod's own runtime. URL parts are bounded, PEM is found by indexing
   END markers once and pairing each BEGIN with the next END of its label within
   64 KiB, and a JWT starts only at a token boundary or after a JSON escape. A
   test holds fifteen 1 MB adversarial inputs under 500 ms each. No cap on the
@@ -803,6 +806,14 @@ Deviations from the design above, each forced by the engine or the decisions:
   cannot hang the guard.
 - **The deny counter is per target in state**, and the pane footer shows it
   with the tripwire's counts; nothing about either reaches the model.
+- **A key left empty in a project's `.env`, or out of it, stays off the band**
+  (mod 0.1.5). `.env.example` ships blanks and an app reads a missing or empty
+  value as "off", so doctor's `empty` and `drift` there were mostly keys left
+  that way on purpose, and a band of them hid the findings that matter. The
+  band drops both for the project, the `/env` pane drops the project's `empty`
+  badge (the row already says `unset`), and "Ask Claude to fix" tells the
+  model to leave such keys alone. `empty` in `~/.secrets` still shows in both,
+  since that file holds only credentials. `warden doctor` itself is unchanged.
 
 Not verified, because it needs a person at the dialog: Set… and Generate
 opening warden's `osascript` dialog from `$.process.run`, in the terminal and

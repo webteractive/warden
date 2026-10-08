@@ -1,6 +1,6 @@
 {
   "name": "warden",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Guards .env and ~/.secrets reads with warden, redacts credentials from tool output, and shows env health and an /env pane — never a value.",
   "author": {
     "name": "webteractive"

@@ -4,6 +4,7 @@ import type { Engine } from 'claude-code/testing'
 
 import { FIX_PROMPT } from '../hooks/health'
 import { CWD, fakeWarden, PROBLEMS, world } from './world'
+import type { Problem } from '../types'
 import type { FakeWarden, Seen, WorldOptions } from './world'
 
 const SURFACES = ['terminal', 'desktop'] as const
@@ -20,6 +21,14 @@ const BAND = {
 const PANE_PROPS = {
   title: 'env', isFocused: true, bodyColumns: 90, placement: 'dock' as const,
   scroll: { offset: 0, bodyRows: 30 }, view: {},
+}
+
+const EMPTY_IN_ENV: Problem = {
+  code: 'empty', key: 'MAIL_PASSWORD', severity: 'warn', message: 'MAIL_PASSWORD is declared but empty', fix: 'warden set --secret MAIL_PASSWORD',
+}
+const DRIFT: Problem = PROBLEMS[2]!
+const EMPTY_IN_SECRETS: Problem = {
+  code: 'empty', key: 'GH_TOKEN', severity: 'warn', message: 'GH_TOKEN is declared but empty', fix: 'warden set --secret GH_TOKEN',
 }
 
 // Another plugin's band beneath warden's: it must still show.
@@ -55,7 +64,7 @@ for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...BAND, surface })
     expect(await ui.find({ type: 'Text', text: /\.env: 2 problems/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /error\s+perms/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /multi-line/ })).toBe(undefined)
+    expect(await ui.find({ type: 'Text', text: /multi-line|declared in \.env\.example/ })).toBe(undefined)
     expect(await ui.find({ type: 'Text', text: /another plugin's band/ })).toBeDefined()
     await ui.unmount()
   })
@@ -65,6 +74,42 @@ for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...BAND, surface })
     expect(await ui.find({ key: 'warden-hide' })).toBe(undefined)
     expect(await ui.find({ type: 'Text', text: /another plugin's band/ })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test(`${surface}: a key left empty in .env, or out of it, is not a band problem`, async ($, on) => {
+    await begin($, on, { warden: fakeWarden({ doctor: { project: [EMPTY_IN_ENV, DRIFT], global: [] } }) })
+    const ui = await $.ui.mount({ ...BAND, surface })
+    expect(await ui.find({ key: 'warden-hide' })).toBe(undefined)
+    expect(await ui.find({ type: 'Text', text: /MAIL_PASSWORD|STRIPE_SECRET/ })).toBe(undefined)
+    await ui.unmount()
+  })
+
+  test(`${surface}: a key left empty in ~/.secrets still shows`, async ($, on) => {
+    await begin($, on, {
+      warden: fakeWarden({ doctor: { project: [EMPTY_IN_ENV, DRIFT], global: [EMPTY_IN_SECRETS] } }),
+    })
+    const ui = await $.ui.mount({ ...BAND, surface })
+    expect(await ui.find({ type: 'Text', text: /^~\/\.secrets: 1 problem/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /~\/\.secrets: GH_TOKEN is declared but empty/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /MAIL_PASSWORD|STRIPE_SECRET/ })).toBe(undefined)
+    await ui.unmount()
+  })
+
+  test(`${surface}: /env badges an empty key in ~/.secrets and not in .env`, async ($, on) => {
+    const w = fakeWarden({
+      doctor: { project: [EMPTY_IN_ENV], global: [EMPTY_IN_SECRETS] },
+      list: {
+        project: [{ key: 'MAIL_PASSWORD', class: 'secret', set: false }],
+        global: [{ key: 'GH_TOKEN', class: 'secret', set: false }],
+      },
+    })
+    await begin($, on, { warden: w })
+    await runEnv($, '')
+    const ui = await $.ui.mount({ plugin: 'warden', surface, component: 'Pane', requestId: 'warden-env', props: PANE_PROPS })
+    expect((await ui.find({ key: 'row-0' }))?.text).toMatch(/MAIL_PASSWORD\s+secret\s+unset\s*$/)
+    await ui.press({ key: 'scope-global' })
+    expect((await ui.find({ key: 'row-0' }))?.text).toMatch(/GH_TOKEN\s+secret\s+unset\s+empty/)
     await ui.unmount()
   })
 
