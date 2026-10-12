@@ -396,7 +396,11 @@ a default macOS volume opens `.env` for `.ENV`, and a path is judged by where it
 symlinks land as well as by its name. A shell command is judged as the shell
 will spell it: quotes, backslashes and `$'…'` escapes are undone, a variable set
 earlier in the same command stands in for its value, and braces and wildcards
-that can select a dotfile count as naming it. `warden hook --guard --json`
+that can select a dotfile count as naming it. A heredoc body is text a command
+reads, so a doc or a `git commit -m "$(cat <<'EOF'` message that mentions
+`cat .env` is not a read; a body a shell on its line may run (`bash <<EOF`,
+`cat <<EOF | sh`, `bash -c "$(cat <<EOF`) is judged, and a heredoc the parser is
+unsure of is judged whole. `warden hook --guard --json`
 writes the decision to stdout —
 `{"decision":"deny","target":"env"|"secrets","reason":"…"}` or
 `{"decision":"allow"}` — for a caller that words its own messages; the exit
@@ -413,9 +417,9 @@ so `PATH` has the new binary.
 
 **This is a speed bump list, not a sandbox.** It closes the path taken by
 accident and teaches the replacement at the moment of need. A command can still
-read a file in ways no matcher enumerates — `python -c`, a heredoc, a base64
-round trip, a build script that loads dotenv, or a name computed at run time
-from a substitution, `eval` or a file. Warden is not a boundary and the hook
+read a file in ways no matcher enumerates — `python -c`, a script written by a
+heredoc and run later, a base64 round trip, a build script that loads dotenv, or
+a name computed at run time from a substitution, `eval` or a file. Warden is not a boundary and the hook
 does not make it one.
 
 ### The Claude Code mod

@@ -3,8 +3,9 @@
 //
 // What this is: a speed bump list that closes the accidental path and teaches
 // the replacement at the moment of need. What it is not: containment. A command
-// can read a file in ways no matcher enumerates — python -c, a heredoc, a base64
-// round trip, a build script that loads dotenv. Nothing here may describe itself
+// can read a file in ways no matcher enumerates — python -c, a script written by
+// a heredoc and run later, a base64 round trip, a build script that loads
+// dotenv. Nothing here may describe itself
 // as security, and a test enforces that.
 package hook
 
@@ -167,9 +168,11 @@ func Detail(r Request) Decision {
 		// Judge each segment on its own, so a chained read is not laundered by a
 		// harmless command sitting next to it. Every segment is judged, so a
 		// command naming both files is reported against the stricter one. The
-		// command is judged as the shell will spell it, not as it was typed.
+		// command is judged as the shell will spell it, not as it was typed. A
+		// heredoc body is text a command reads, not commands, so it is left out
+		// unless something on its line may run it (see bodyRunsAsShell).
 		var target Target
-		for _, seg := range splitSegments(normalizeShell(r.Command)) {
+		for _, seg := range splitSegments(normalizeShell(stripHeredocBodies(r.Command, bodyRunsAsShell))) {
 			target = stricter(target, deniedSegment(seg))
 		}
 		if target != "" {

@@ -72,8 +72,9 @@ func addHookCommand(root *cobra.Command, out io.Writer) {
 			"What this is: a speed bump list. It closes the path taken by accident and\n" +
 			"teaches the replacement at the moment of need. What it is not: containment.\n" +
 			"A command can read a file in ways no matcher enumerates — python -c, a\n" +
-			"heredoc, a base64 round trip, a build script that loads dotenv. Warden is\n" +
-			"not a boundary and this hook does not make it one.",
+			"script written by a heredoc and run later, a base64 round trip, a build\n" +
+			"script that loads dotenv. Warden is not a boundary and this hook does not\n" +
+			"make it one.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if guard, _ := cmd.Flags().GetBool("guard"); guard {

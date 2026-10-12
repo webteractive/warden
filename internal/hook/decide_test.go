@@ -110,8 +110,8 @@ func TestADenialNamesEveryWriteChannelAndHowToChoose(t *testing.T) {
 }
 
 // The tool must never describe itself as a security boundary. The pattern list
-// is a speed bump list: python -c, a heredoc, a base64 round trip and a dotenv
-// loader all walk straight past it. A false claim here is worse than no hook,
+// is a speed bump list: python -c, a script a heredoc wrote, a base64 round trip
+// and a dotenv loader all walk straight past it. A false claim here is worse than no hook,
 // because someone would rely on it.
 func TestNothingClaimsThisIsSecurity(t *testing.T) {
 	reason := Decide(Request{ToolName: "Bash", Command: "cat .env"})
@@ -233,6 +233,47 @@ func TestDecideSeesThroughShellSpellings(t *testing.T) {
 		{"globs over other files", "cat *.md src/*", false},
 		{"a dotfile glob that cannot match", "cat .eslintrc*", false},
 		{"another dotfile", "cat .editorconfig", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Decide(Request{ToolName: "Bash", Command: tc.cmd}) != ""
+			if got != tc.deny {
+				t.Errorf("deny = %v, want %v for %q", got, tc.deny, tc.cmd)
+			}
+		})
+	}
+}
+
+// A heredoc body is text a command reads, so a doc or commit message that says
+// `cat .env` is not a read. A body the line may run is still judged, and anything
+// the parse is unsure of is judged whole.
+func TestDecideOnHeredocBodies(t *testing.T) {
+	for _, tc := range []struct {
+		name, cmd string
+		deny      bool
+	}{
+		{"writing a doc", "cat > notes.md <<'EOF'\nnever cat .env\nEOF", false},
+		{"a commit message", "git commit -m \"$(cat <<'EOF'\nstop sed reading ~/.secrets\nEOF\n)\"", false},
+		{"a PR body", "gh pr create --title t --body \"$(cat <<'EOF'\ngrep KEY .env\nEOF\n)\"", false},
+		{"tee writing a doc", "tee docs/env.md <<EOF\nhead .env\nEOF", false},
+		{"an interpreter reading its script", "python3 - <<'EOF'\nprint('cat .env')\nEOF", false},
+
+		{"writing to the file itself", "cat > .env <<EOF\nA=1\nEOF", true},
+		{"a read after the body", "cat > n.md <<EOF\nx\nEOF\ncat .env", true},
+		{"a read on the operator line", "cat <<EOF; cat .env\nx\nEOF", true},
+		{"fed to bash", "bash <<'EOF'\ncat .env\nEOF", true},
+		{"fed to bash by a quoted name", "b\"\"ash <<'EOF'\ncat .env\nEOF", true},
+		{"fed to a computed command", "$sh <<'EOF'\ncat .env\nEOF", true},
+		{"piped to sh", "cat <<EOF | sh\nhead ~/.secrets\nEOF", true},
+		{"fed to ssh", "ssh box <<EOF\ncat .env\nEOF", true},
+		{"run by bash -c", "bash -c \"$(cat <<'EOF'\ncat .env\nEOF\n)\"", true},
+		{"fed to eval", "eval \"$(cat <<'EOF'\ncat .env\nEOF\n)\"", true},
+		{"each line run by parallel", "parallel <<EOF\ncat .env\nEOF", true},
+		{"unterminated", "cat <<EOF\ncat .env", true},
+		{"<< in a comment", "# see <<X\ncat .env\nX", true},
+		{"<< in arithmetic", "echo $((1<<X))\ncat .env\nX", true},
+		{"<< in a parameter expansion", "echo ${v/<<E/}\ncat .env\nE/}", true},
+		{"a delimiter that is a variable", "cat <<$D\ncat .env\n$D", true},
+		{"a terminator glued to )", "x=$(cat <<EOF\na\nEOF)\ncat .env\nEOF", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := Decide(Request{ToolName: "Bash", Command: tc.cmd}) != ""

@@ -12,7 +12,8 @@ a value: warden decides and holds the values, and this mod asks it.
 | `/env` | A pane of key names, class, set/unset and doctor badges. **Set…** and **Generate** run `warden set --secret KEY` (`--generate`), which opens warden's own macOS dialog; the value goes from your keyboard to the file and never through the session. `/env global` for `~/.secrets`, `/env refresh` to re-probe. |
 
 This is a speed bump list plus a tripwire behind it, not containment. `python
--c`, a heredoc, `grep -r TOKEN .` or a dotenv-loading script all get past the
+-c`, a script written by a heredoc and run later, `grep -r TOKEN .` or a
+dotenv-loading script all get past the
 guard; the tripwire catches what it can recognise in their output.
 
 ## Requirements
