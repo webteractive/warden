@@ -2,6 +2,12 @@ module github.com/webteractive/warden
 
 go 1.26.7
 
+// Floor, not a pin: go1.26.8 and earlier carry standard-library vulnerabilities
+// in net/http (GO-2026-6617), net/textproto and crypto/tls that govulncheck
+// finds reachable, mostly through the MCP SDK. Setting this here makes every
+// local build honour the floor; CI and release need check-latest as well.
+toolchain go1.26.9
+
 require (
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/spf13/cobra v1.10.2

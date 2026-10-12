@@ -18,6 +18,9 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26'
+          # setup-go pins GOTOOLCHAIN=local, so go.mod's toolchain floor is not
+          # honoured here; without check-latest a runner's cached older patch wins.
+          check-latest: true
           cache: true
       - uses: goreleaser/goreleaser-action@v7
         with:

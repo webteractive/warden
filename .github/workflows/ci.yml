@@ -13,6 +13,9 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26'
+          # setup-go pins GOTOOLCHAIN=local, so go.mod's toolchain floor is not
+          # honoured here; without check-latest a runner's cached older patch wins.
+          check-latest: true
           cache: true
       - name: gofmt
         run: |
@@ -26,3 +29,21 @@ jobs:
         run: go vet ./...
       - name: test
         run: go test -race ./...
+
+  # Kept out of the test job so a vulnerability disclosure never masks a real
+  # test failure, and so this keeps reporting when the suite is red.
+  vulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          # setup-go pins GOTOOLCHAIN=local, so go.mod's toolchain floor is not
+          # honoured here; without check-latest a runner's cached older patch wins.
+          check-latest: true
+          cache: true
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
