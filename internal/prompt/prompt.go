@@ -244,17 +244,22 @@ func (TTY) AskSecret(key, path string) (secret.Secret, error) {
 	return secret.Secret(b), nil
 }
 
-// Default picks the best available channel: a native dialog on macOS, a TTY
-// where one exists, and otherwise a refusal that tells the user what to run.
+// Default picks the best available channel: a native dialog on macOS,
+// warden's own dialog window where there is a display for it, a TTY where one
+// exists, and otherwise a refusal that tells the user what to run.
 func Default() Prompter {
 	if runtime.GOOS == "darwin" {
 		if _, err := exec.LookPath("osascript"); err == nil {
 			return Osascript{}
 		}
 	}
+	fallback := Prompter(Refusing{})
 	if f, err := os.OpenFile("/dev/tty", os.O_RDWR, 0); err == nil {
 		f.Close()
-		return TTY{}
+		fallback = TTY{}
 	}
-	return Refusing{}
+	if canOpenWindow() {
+		return Window{Prompter: fallback}
+	}
+	return fallback
 }

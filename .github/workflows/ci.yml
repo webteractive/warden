@@ -17,6 +17,14 @@ jobs:
           # honoured here; without check-latest a runner's cached older patch wins.
           check-latest: true
           cache: true
+      # The secret dialog (internal/dialog) builds its window with cgo against
+      # these; its tests drive it headless, so no display is needed.
+      - name: Gio build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwayland-dev libx11-dev \
+            libx11-xcb-dev libxkbcommon-x11-dev libgles2-mesa-dev libegl1-mesa-dev \
+            libffi-dev libxcursor-dev libvulkan-dev libxfixes-dev
       - name: gofmt
         run: |
           unformatted="$(gofmt -l .)"
@@ -29,6 +37,13 @@ jobs:
         run: go vet ./...
       - name: test
         run: go test -race ./...
+      # Release builds are CGO_ENABLED=0, where the dialog window compiles out
+      # on Linux and macOS; Windows needs no cgo for it at all.
+      - name: cross-build
+        run: |
+          for os in linux darwin windows; do
+            GOOS=$os CGO_ENABLED=0 go build ./... || exit 1
+          done
 
   # Kept out of the test job so a vulnerability disclosure never masks a real
   # test failure, and so this keeps reporting when the suite is red.

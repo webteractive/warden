@@ -33,9 +33,12 @@ curl -fsSL https://raw.githubusercontent.com/webteractive/warden/main/install.sh
   | WARDEN_INSTALL_DIR=/usr/local/bin sh
 ```
 
-> The dialog that collects secret values uses macOS `osascript`. On Linux, Warden
-> falls back to a TTY prompt with echo disabled; with no TTY it refuses and prints
-> the command for you to run yourself.
+> The dialog that collects secret values uses macOS `osascript`. A build with cgo
+> (`CGO_ENABLED=1 go build ./cmd/warden`) also has warden's own dialog window, used on
+> Linux when there is a display and on Windows: a multi-line field, masked until you
+> press **Reveal**. Release binaries are built without cgo and don't include it yet.
+> Otherwise Warden falls back to a TTY prompt with echo disabled; with no TTY it
+> refuses and prints the command for you to run yourself.
 
 ### From source
 

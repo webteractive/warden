@@ -4,9 +4,14 @@ import (
 	"os"
 
 	"github.com/webteractive/warden/internal/cli"
+	"github.com/webteractive/warden/internal/dialog"
 )
 
 func main() {
+	// warden's secret dialog runs as a child warden; see internal/dialog.
+	if len(os.Args) > 1 && os.Args[1] == dialog.Arg {
+		dialog.Main()
+	}
 	if in := valueBearingStdin(); in != nil {
 		cli.SetStdin = in
 	}

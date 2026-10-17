@@ -159,6 +159,8 @@ markers.
 **Secret keys** go through a native macOS dialog (an `NSAlert` run as JXA by `osascript`) with a
 secure field that **Reveal** swaps for a multi-line one, kept out of screen capture, titled with the
 key name *and the target file path* so the user sees what they are authorising before typing.
+Elsewhere, a cgo build shows warden's own Gio window (`internal/dialog`): a multi-line field
+masked until **Reveal**, run as a child warden process that hands the value back over a pipe.
 60-second timeout. Cancel or timeout writes nothing and exits 3. The typed value lands in a
 `Secret`, goes straight to the file, and is zeroed.
 

@@ -59,11 +59,12 @@ func TestExposeCallSitesStayFew(t *testing.T) {
 	// vault sealDoc (the wire type that defeats Secret redaction),
 	// vault deriveFromPassphrase, vault decodeMasterKey,
 	// keyring Security.Set and SecretTool.Set (stdin, never argv),
-	// write.setFromVault (the value crossing on vault push).
+	// write.setFromVault (the value crossing on vault push),
+	// dialog.Main (the dialog child handing the value up its pipe to warden).
 	//
 	// This counts matching *lines*, not calls: Security.Set exposes twice on one
 	// line because security asks for the value and then a retype.
-	const budget = 10
+	const budget = 11
 	if len(production) > budget {
 		t.Errorf("Expose() is called in %d production sites, budget is %d.\n"+
 			"Each one lets a value escape the safe zone — review these and raise the budget "+
