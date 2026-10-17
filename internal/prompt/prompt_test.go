@@ -70,25 +70,34 @@ func TestOsascriptOutputIsNeverEmbeddedInAnError(t *testing.T) {
 	}
 }
 
-func TestSecretDialogTakesKeyAndPathAsArguments(t *testing.T) {
-	key, path := `WEIRD"KEY'`, `/tmp/my "dir"/.env`
-	args := osascriptArgs(key, path)
-	if got := args[len(args)-2:]; got[0] != key || got[1] != path {
-		t.Errorf("key and path must reach the script verbatim as arguments, got %q", got)
+func TestSecretDialogTakesKeyAndPathFromItsEnvironment(t *testing.T) {
+	// A key that reads as an osascript option must never reach its command line.
+	key, path := `-e "KEY'`, `/tmp/my "dir"/.env`
+	env := dialogEnv([]string{"HOME=/h"}, key, path)
+	want := []string{"HOME=/h", "WARDEN_DIALOG_KEY=" + key, "WARDEN_DIALOG_PATH=" + path}
+	if strings.Join(env, "\x00") != strings.Join(want, "\x00") {
+		t.Errorf("env = %q, want %q", env, want)
 	}
-	if strings.Contains(secretDialog, "WEIRD") {
-		t.Error("the key must not be spliced into the script")
+	for _, name := range []string{"WARDEN_DIALOG_KEY", "WARDEN_DIALOG_PATH"} {
+		if !strings.Contains(secretDialog, name) {
+			t.Errorf("secret dialog does not read %s", name)
+		}
 	}
 }
 
-func TestSecretDialogIsAHiddenTextareaWithReveal(t *testing.T) {
+func TestSecretDialogHidesInASecureFieldUntilRevealed(t *testing.T) {
 	for _, want := range []string{
-		"NSTextView", // a textarea, so a long token wraps
-		"clearColor", // hidden until revealed
+		"NSSecureTextField",   // hidden: secure input, no copy, no AX value
+		"NSTextView",          // revealed: a textarea, so a long token wraps
+		"NSWindowSharingNone", // never screen-captured
 		"'Reveal'", "'Hide'",
+		"shown ? scroll : secure",
 	} {
 		if !strings.Contains(secretDialog, want) {
 			t.Errorf("secret dialog is missing %s", want)
 		}
+	}
+	if strings.Contains(secretDialog, "clearColor") {
+		t.Error("hiding must be a secure field, not invisible text")
 	}
 }

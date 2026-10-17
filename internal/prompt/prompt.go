@@ -95,8 +95,9 @@ func (Refusing) AskSecret(key, path string) (secret.Secret, error) {
 		ErrUnavailable, key, path)
 }
 
-// Osascript shows a native macOS dialog: a multi-line field, so a long token
-// or a PEM block fits, with its text hidden until the user presses Reveal.
+// Osascript shows a native macOS dialog: a secure field while the value is
+// hidden, and a multi-line field once the user presses Reveal, so a long token
+// or a PEM block can be read back before it is saved.
 type Osascript struct {
 	Timeout time.Duration
 }
@@ -109,7 +110,9 @@ func (o Osascript) AskSecret(key, path string) (secret.Secret, error) {
 	// NSAlert has no "giving up after", so the deadline is enforced here.
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "osascript", osascriptArgs(key, path)...).Output()
+	cmd := exec.CommandContext(ctx, "osascript", "-l", "JavaScript", "-e", secretDialog)
+	cmd.Env = dialogEnv(os.Environ(), key, path)
+	out, err := cmd.Output()
 	if ctx.Err() != nil {
 		return "", fmt.Errorf("dialog timed out: %w", ErrCancelled)
 	}
@@ -121,28 +124,36 @@ func (o Osascript) AskSecret(key, path string) (secret.Secret, error) {
 	return parseOsascript(string(out))
 }
 
-// osascriptArgs runs secretDialog, handing it the key and path as arguments
-// rather than splicing them into the script, so neither needs escaping.
-func osascriptArgs(key, path string) []string {
-	return []string{"-l", "JavaScript", "-e", secretDialog, key, path}
+// dialogEnv hands secretDialog the key and path through its environment. As
+// arguments they would follow the script on osascript's command line, where a
+// key from a hand-edited file that starts with "-" reads as an option, "-e"
+// among them; the environment is never parsed, and neither needs escaping.
+func dialogEnv(env []string, key, path string) []string {
+	return append(env, "WARDEN_DIALOG_KEY="+key, "WARDEN_DIALOG_PATH="+path)
 }
 
-// secretDialog is the JXA behind AskSecret. `display dialog` offers only a
-// single-line field and no way to toggle its masking, so this builds an
-// NSAlert whose accessory view is a scrolling text view.
+// secretDialog is the JXA behind AskSecret. `display dialog` offers one hidden
+// line and no way to show it, so this builds an NSAlert and swaps its
+// accessory view.
 //
-// A text view cannot mask with bullets the way NSSecureTextField does; hidden,
-// its text is drawn in the clear colour, so nothing typed or pasted shows, and
-// the caret still moves. Reveal and Hide end the modal session and rerun it on
-// the same view, which keeps the text and needs no ObjC target class. Return
-// inserts a newline, as it does in any textarea; Save and Cancel are clicked,
-// and Escape still cancels. The dialog names both the key and the target file
-// so the user can see what they are authorising before typing.
+// Hidden, the field is an NSSecureTextField: secure event input while it has
+// focus, no copy, and no value for accessibility clients, as `with hidden
+// answer` gave. Reveal moves the value into a wrapping, scrolling text view,
+// which has none of that, and only the user's press puts it there; Hide moves
+// it back. Each press ends the modal session and reruns it with the other
+// view, so no ObjC target class is needed. The window is kept out of screen
+// capture either way. In the text view Return inserts a newline, as it does in
+// any textarea, and Escape still cancels. The dialog names both the key and
+// the target file so the user can see what they are authorising before typing.
 const secretDialog = `ObjC.import('Cocoa');
-function run(argv) {
-  var key = argv[0], path = argv[1];
+function run() {
+  var env = $.NSProcessInfo.processInfo.environment;
+  var key = env.objectForKey('WARDEN_DIALOG_KEY').js;
+  var path = env.objectForKey('WARDEN_DIALOG_PATH').js;
   var app = $.NSApplication.sharedApplication;
   app.setActivationPolicy($.NSApplicationActivationPolicyAccessory);
+
+  var secure = $.NSSecureTextField.alloc.initWithFrame($.NSMakeRect(0, 0, 420, 24));
 
   var scroll = $.NSScrollView.alloc.initWithFrame($.NSMakeRect(0, 0, 420, 140));
   scroll.hasVerticalScroller = true;
@@ -152,32 +163,38 @@ function run(argv) {
   text.automaticQuoteSubstitutionEnabled = false;
   text.automaticDashSubstitutionEnabled = false;
   text.automaticTextReplacementEnabled = false;
+  text.automaticSpellingCorrectionEnabled = false;
+  text.automaticTextCompletionEnabled = false;
   text.continuousSpellCheckingEnabled = false;
   text.font = $.NSFont.userFixedPitchFontOfSize(12);
   text.horizontallyResizable = false;
   text.verticallyResizable = true;
   text.autoresizingMask = $.NSViewWidthSizable;
   text.textContainer.widthTracksTextView = true;
-  text.insertionPointColor = $.NSColor.textColor;
   scroll.documentView = text;
 
   var shown = false;
   for (;;) {
-    text.textColor = shown ? $.NSColor.textColor : $.NSColor.clearColor;
     var alert = $.NSAlert.alloc.init;
     alert.messageText = 'warden — ' + key;
     alert.informativeText = 'Enter the value for ' + key + '\n\nIt will be written to:\n' + path;
     alert.addButtonWithTitle('Save');
     alert.addButtonWithTitle('Cancel');
     alert.addButtonWithTitle(shown ? 'Hide' : 'Reveal');
-    alert.accessoryView = scroll;
+    alert.accessoryView = shown ? scroll : secure;
     alert.layout;
-    alert.window.initialFirstResponder = text;
+    alert.window.sharingType = $.NSWindowSharingNone;
+    alert.window.initialFirstResponder = shown ? text : secure;
     app.activateIgnoringOtherApps(true);
     var pressed = alert.runModal;
-    if (pressed === 1002) { shown = !shown; continue; }
+    if (pressed === 1002) {
+      if (shown) { secure.stringValue = text.string; text.string = ''; }
+      else { text.string = secure.stringValue; secure.stringValue = ''; }
+      shown = !shown;
+      continue;
+    }
     if (pressed !== 1000) throw new Error('cancelled');
-    return text.string.js;
+    return (shown ? text.string : secure.stringValue).js;
   }
 }`
 
