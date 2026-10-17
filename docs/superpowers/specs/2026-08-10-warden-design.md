@@ -156,7 +156,8 @@ markers.
 
 **Public keys** are set directly by the agent, no prompt.
 
-**Secret keys** go through a native macOS `display dialog … with hidden answer`, titled with the
+**Secret keys** go through a native macOS dialog (an `NSAlert` run as JXA by `osascript`) with a
+multi-line field whose text stays hidden until the user presses **Reveal**, titled with the
 key name *and the target file path* so the user sees what they are authorising before typing.
 60-second timeout. Cancel or timeout writes nothing and exits 3. The typed value lands in a
 `Secret`, goes straight to the file, and is zeroed.

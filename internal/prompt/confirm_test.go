@@ -121,8 +121,6 @@ func TestConfirmScriptCompilesAsAppleScript(t *testing.T) {
 		{"retype", buildConfirmScript("public", "FOO_KEY", "/tmp/.env.schema", 60, true)},
 		{"plain", buildConfirmScript("secret", "FOO_KEY", "/tmp/.env.schema", 60, false)},
 		{"quoted key", buildConfirmScript("public", `WEIRD"KEY`, `/tmp/my "dir"/.env.schema`, 60, true)},
-		// AskSecret's script shares applescriptString, so cover it here too.
-		{"ask secret", buildScript("DB_PASSWORD", "/tmp/.env", 60)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out := filepath.Join(t.TempDir(), "s.scpt")
@@ -131,6 +129,22 @@ func TestConfirmScriptCompilesAsAppleScript(t *testing.T) {
 				t.Errorf("script does not compile: %v\n%s\n--- script ---\n%s", err, b, tc.script)
 			}
 		})
+	}
+}
+
+// AskSecret's dialog is JXA, not AppleScript, so it compiles as JavaScript.
+func TestSecretDialogCompiles(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("JXA is macOS only")
+	}
+	bin, err := exec.LookPath("osacompile")
+	if err != nil {
+		t.Skip("osacompile unavailable")
+	}
+	out := filepath.Join(t.TempDir(), "s.scpt")
+	cmd := exec.Command(bin, "-l", "JavaScript", "-o", out, "-e", secretDialog)
+	if b, err := cmd.CombinedOutput(); err != nil {
+		t.Errorf("script does not compile: %v\n%s", err, b)
 	}
 }
 

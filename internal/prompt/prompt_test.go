@@ -43,6 +43,8 @@ func TestParseOsascriptOutput(t *testing.T) {
 	}{
 		{"plain value", "hunter2\n", "hunter2", nil},
 		{"value with spaces", "two words\n", "two words", nil},
+		{"pasted trailing newline", "tok\r\n\n", "tok", nil},
+		{"multi-line value keeps inner breaks", "-----BEGIN-----\nabc\n-----END-----\n", "-----BEGIN-----\nabc\n-----END-----", nil},
 		{"timeout sentinel", timeoutSentinel + "\n", "", ErrCancelled},
 		{"empty means cancel", "\n", "", ErrCancelled},
 	}
@@ -68,15 +70,25 @@ func TestOsascriptOutputIsNeverEmbeddedInAnError(t *testing.T) {
 	}
 }
 
-func TestBuildScriptEscapesQuotes(t *testing.T) {
-	s := buildScript(`WEIRD"KEY`, `/tmp/my "dir"/.env`, 60)
-	if strings.Contains(s, `"WEIRD"KEY"`) {
-		t.Error("unescaped quote would break the AppleScript")
+func TestSecretDialogTakesKeyAndPathAsArguments(t *testing.T) {
+	key, path := `WEIRD"KEY'`, `/tmp/my "dir"/.env`
+	args := osascriptArgs(key, path)
+	if got := args[len(args)-2:]; got[0] != key || got[1] != path {
+		t.Errorf("key and path must reach the script verbatim as arguments, got %q", got)
 	}
-	if !strings.Contains(s, "hidden answer") {
-		t.Error("the dialog must hide what is typed")
+	if strings.Contains(secretDialog, "WEIRD") {
+		t.Error("the key must not be spliced into the script")
 	}
-	if !strings.Contains(s, "giving up after 60") {
-		t.Error("the dialog must time out")
+}
+
+func TestSecretDialogIsAHiddenTextareaWithReveal(t *testing.T) {
+	for _, want := range []string{
+		"NSTextView", // a textarea, so a long token wraps
+		"clearColor", // hidden until revealed
+		"'Reveal'", "'Hide'",
+	} {
+		if !strings.Contains(secretDialog, want) {
+			t.Errorf("secret dialog is missing %s", want)
+		}
 	}
 }

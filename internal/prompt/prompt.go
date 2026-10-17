@@ -8,6 +8,7 @@
 package prompt
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -94,7 +95,8 @@ func (Refusing) AskSecret(key, path string) (secret.Secret, error) {
 		ErrUnavailable, key, path)
 }
 
-// Osascript shows a native macOS dialog with a hidden answer field.
+// Osascript shows a native macOS dialog: a multi-line field, so a long token
+// or a PEM block fits, with its text hidden until the user presses Reveal.
 type Osascript struct {
 	Timeout time.Duration
 }
@@ -104,8 +106,13 @@ func (o Osascript) AskSecret(key, path string) (secret.Secret, error) {
 	if timeout <= 0 {
 		timeout = 60 * time.Second
 	}
-	cmd := exec.Command("osascript", "-e", buildScript(key, path, int(timeout.Seconds())))
-	out, err := cmd.Output()
+	// NSAlert has no "giving up after", so the deadline is enforced here.
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "osascript", osascriptArgs(key, path)...).Output()
+	if ctx.Err() != nil {
+		return "", fmt.Errorf("dialog timed out: %w", ErrCancelled)
+	}
 	if err != nil {
 		// A user pressing Cancel makes osascript exit non-zero. Report the
 		// cancellation, never the command's output.
@@ -114,20 +121,65 @@ func (o Osascript) AskSecret(key, path string) (secret.Secret, error) {
 	return parseOsascript(string(out))
 }
 
-// buildScript renders the AppleScript. The dialog names both the key and the
-// target file so the user can see what they are authorising before typing.
-func buildScript(key, path string, seconds int) string {
-	msg := fmt.Sprintf("Enter the value for %s\n\nIt will be written to:\n%s", key, path)
-	return fmt.Sprintf(
-		"set r to display dialog %s with title %s default answer \"\" with hidden answer giving up after %d\n"+
-			"if gave up of r then\n  return %s\nend if\n"+
-			"return text returned of r",
-		applescriptString(msg),
-		applescriptString("warden — "+key),
-		seconds,
-		applescriptString(timeoutSentinel),
-	)
+// osascriptArgs runs secretDialog, handing it the key and path as arguments
+// rather than splicing them into the script, so neither needs escaping.
+func osascriptArgs(key, path string) []string {
+	return []string{"-l", "JavaScript", "-e", secretDialog, key, path}
 }
+
+// secretDialog is the JXA behind AskSecret. `display dialog` offers only a
+// single-line field and no way to toggle its masking, so this builds an
+// NSAlert whose accessory view is a scrolling text view.
+//
+// A text view cannot mask with bullets the way NSSecureTextField does; hidden,
+// its text is drawn in the clear colour, so nothing typed or pasted shows, and
+// the caret still moves. Reveal and Hide end the modal session and rerun it on
+// the same view, which keeps the text and needs no ObjC target class. Return
+// inserts a newline, as it does in any textarea; Save and Cancel are clicked,
+// and Escape still cancels. The dialog names both the key and the target file
+// so the user can see what they are authorising before typing.
+const secretDialog = `ObjC.import('Cocoa');
+function run(argv) {
+  var key = argv[0], path = argv[1];
+  var app = $.NSApplication.sharedApplication;
+  app.setActivationPolicy($.NSApplicationActivationPolicyAccessory);
+
+  var scroll = $.NSScrollView.alloc.initWithFrame($.NSMakeRect(0, 0, 420, 140));
+  scroll.hasVerticalScroller = true;
+  scroll.borderType = $.NSBezelBorder;
+  var text = $.NSTextView.alloc.initWithFrame($.NSMakeRect(0, 0, 420, 140));
+  text.richText = false;
+  text.automaticQuoteSubstitutionEnabled = false;
+  text.automaticDashSubstitutionEnabled = false;
+  text.automaticTextReplacementEnabled = false;
+  text.continuousSpellCheckingEnabled = false;
+  text.font = $.NSFont.userFixedPitchFontOfSize(12);
+  text.horizontallyResizable = false;
+  text.verticallyResizable = true;
+  text.autoresizingMask = $.NSViewWidthSizable;
+  text.textContainer.widthTracksTextView = true;
+  text.insertionPointColor = $.NSColor.textColor;
+  scroll.documentView = text;
+
+  var shown = false;
+  for (;;) {
+    text.textColor = shown ? $.NSColor.textColor : $.NSColor.clearColor;
+    var alert = $.NSAlert.alloc.init;
+    alert.messageText = 'warden — ' + key;
+    alert.informativeText = 'Enter the value for ' + key + '\n\nIt will be written to:\n' + path;
+    alert.addButtonWithTitle('Save');
+    alert.addButtonWithTitle('Cancel');
+    alert.addButtonWithTitle(shown ? 'Hide' : 'Reveal');
+    alert.accessoryView = scroll;
+    alert.layout;
+    alert.window.initialFirstResponder = text;
+    app.activateIgnoringOtherApps(true);
+    var pressed = alert.runModal;
+    if (pressed === 1002) { shown = !shown; continue; }
+    if (pressed !== 1000) throw new Error('cancelled');
+    return text.string.js;
+  }
+}`
 
 func applescriptString(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
@@ -138,8 +190,12 @@ func applescriptString(s string) string {
 
 // parseOsascript converts dialog output into a Secret. It never includes the
 // raw output in an error, because that output is the secret.
+//
+// Trailing line breaks are dropped: osascript adds one, and a token pasted
+// into a textarea often brings one along, or the Return a user pressed out of
+// habit. Line breaks inside the value, as in a PEM block, are kept.
 func parseOsascript(raw string) (secret.Secret, error) {
-	v := strings.TrimSuffix(raw, "\n")
+	v := strings.TrimRight(raw, "\r\n")
 	if v == timeoutSentinel {
 		return "", fmt.Errorf("dialog timed out: %w", ErrCancelled)
 	}
